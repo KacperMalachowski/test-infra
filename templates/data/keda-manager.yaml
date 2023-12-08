@@ -10,6 +10,7 @@ templates:
             branches:
               - "^master$"
               - "^main$"
+              - "^release-*"
             pubsub_project: "sap-kyma-prow"
             pubsub_topic: "prowjobs"
             image: eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b
@@ -150,31 +151,6 @@ templates:
                   local:
                     - job_build
                     - limits
-              - jobConfig:
-                  name: release-keda-manager-module-build
-                  annotations:
-                    owner: otters
-                    description: Job to build keda module for a release.
-                  always_run: true
-                  labels:
-                    preset-sa-kyma-push-images: "true"
-                    preset-bot-github-token: "true"
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/prod/unsigned"
-                    IMG: "europe-docker.pkg.dev/kyma-project/prod/keda-manager:${PULL_BASE_REF}"
-                  command: "./scripts/release.sh"
-                  args:
-                    - "ci"
-                  branches:
-                    - ^v?\d+\.\d+\.\d+(?:-.*)?$ #Watches for new Tag
-                inheritedConfigs:
-                  global:
-                    - image_buildpack-golang # takes latest golang image
-                    - jobConfig_default
-                    - jobConfig_postsubmit
-                  local:
-                    - limits
 
       - to: ../../prow/jobs/kyma-project/keda-manager/keda-manager-lint.yaml
         jobConfigs:
@@ -206,7 +182,7 @@ templates:
               preset-kyma-guard-bot-github-token: "true"
               preset-kind-volume-mounts: "true"
               preset-dind-enabled: "true"
-            image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-k3d:v20231130-5e582eeb
+            image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-k3d:v20231206-59f0cdfa
             command: "/init.sh"
             request_memory: "4Gi"
             request_cpu: "3"
@@ -228,6 +204,7 @@ templates:
                     - "make test"
                   branches:
                     - ^main$ # any pr against main triggers this
+                    - ^release-*
                 inheritedConfigs:
                   global:
                     - image_buildpack-golang # takes latest golang image
@@ -248,6 +225,9 @@ templates:
                     - -c
                     - |
                       make -C hack/ci k3d-integration-test
+                  branches:
+                    - ^main$ # any pr against main triggers this
+                    - ^release-*
                 inheritedConfigs:
                   global:
                     - jobConfig_default
@@ -268,6 +248,9 @@ templates:
                     - -c
                     - |
                       make -C hack/ci k3d-lm-integration-test
+                  branches:
+                    - ^main$ # any pr against main triggers this
+                    - ^release-*
                 inheritedConfigs:
                   global:
                     - jobConfig_default
@@ -288,6 +271,9 @@ templates:
                     - -c
                     - |
                       make -C hack/ci k3d-upgrade-test
+                  branches:
+                    - ^main$ # any pr against main triggers this
+                    - ^release-*
                 inheritedConfigs:
                   global:
                     - jobConfig_default

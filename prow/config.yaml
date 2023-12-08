@@ -267,6 +267,8 @@ branch-protection:
           branches:
             main:
               protect: true
+        community-modules:
+          enforce_admins: false
         private-fn-for-e2e-serverless-tests:
           protect: false
         busola:
@@ -450,6 +452,11 @@ tide:
         - kyma-project/k8s-prow
   context_options:
     from-branch-protection: true
+    orgs:
+      kyma-project:
+        repos:
+          lifecycle-manager:
+            skip-unknown-contexts: true
 
 presets:
   - labels:
