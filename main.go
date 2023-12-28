@@ -1,19 +1,19 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
+	"gopkg.in/yaml.v3"
 	"k8s.io/test-infra/prow/config"
 )
 
 type configs struct {
-	Name  string `json:"name"`
-	Owner string `json:"owner"`
-	Image string `json:"image"`
+	Name  string `yaml:"name"`
+	Owner string `yaml:"owner"`
+	Image string `yaml:"image"`
 }
 
 func main() {
@@ -26,7 +26,7 @@ func main() {
 
 	for _, jobs := range prowConfig.PresubmitsStatic {
 		for _, job := range jobs {
-			if strings.Contains(job.Name, "-build") {
+			if strings.Contains(job.Name, "-build") || strings.Contains(job.Spec.Containers[0].Image, "image-builder") {
 				continue
 			}
 			owner := job.Annotations["owner"]
@@ -42,7 +42,7 @@ func main() {
 
 	for _, jobs := range prowConfig.PostsubmitsStatic {
 		for _, job := range jobs {
-			if strings.Contains(job.Name, "-build") {
+			if strings.Contains(job.Spec.Containers[0].Image, "image-builder") {
 				continue
 			}
 			owner := job.Annotations["owner"]
@@ -57,7 +57,7 @@ func main() {
 	}
 
 	for _, job := range prowConfig.Periodics {
-		if strings.Contains(job.Name, "-build") {
+		if strings.Contains(job.Spec.Containers[0].Image, "image-builder") {
 			continue
 		}
 		owner := job.Annotations["owner"]
@@ -71,14 +71,23 @@ func main() {
 
 	}
 
-	data, _ := json.MarshalIndent(mapa, "  ", "")
+	data, _ := yaml.Marshal(mapa)
 	os.Mkdir("data", os.ModePerm)
-	os.WriteFile("data/jobs.json", data, os.ModePerm)
+	os.WriteFile("data/jobs.yaml", data, os.ModePerm)
 	fmt.Println("Count of teams that should migrate: ", len(mapa))
 	fmt.Print("Teams:")
 	for key, jobs := range mapa {
 		fmt.Print(" ", key)
-		data, _ := json.MarshalIndent(jobs, "  ", "")
-		os.WriteFile(fmt.Sprintf("data/jobs_%s.json", key), data, os.ModePerm)
+		data, _ := yaml.Marshal(jobs)
+		os.WriteFile(fmt.Sprintf("data/jobs_%s.yaml", key), data, os.ModePerm)
+
+		issueBody := "**Description**\n"
+		issueBody += "The prow jobs owned by the " + key + " team have to be removed and if necessary substituted with something else.\n"
+		issueBody += "To simplify the process here is a list of prow jobs that should be migrated by " + key + " team.\n\n"
+		for _, job := range jobs {
+			issueBody += "  - [ ] " + job.Name + " \n"
+		}
+
+		os.WriteFile(fmt.Sprintf("data/issue_%s.md", key), []byte(issueBody), os.ModePerm)
 	}
 }
