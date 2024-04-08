@@ -26,3 +26,10 @@ jobs:
           const token = `${oidc_token}`;
           const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
         shell: node {0}
+      - name: Run build in image-builder
+        uses: ./.github/actions/trigger-image-builder
+        with:
+          oidc-token: ${{ steps.get_oidc.outputs.jwt }}
+          ado-token: ${{ secrets.GITHUB_TOKEN }}
+          name: test-infra/ginkgo
+          dockerfile: prow/images/ginkgo/Dockerfile
