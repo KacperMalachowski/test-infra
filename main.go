@@ -17,7 +17,13 @@ type configs struct {
 }
 
 func main() {
-	prowConfig, err := config.Load("prow/config.yaml", "prow/jobs", nil, "")
+	testInfraPath := os.Args[0]
+
+	if !strings.HasSuffix(testInfraPath, "/") {
+		testInfraPath = fmt.Sprintf("%s/", testInfraPath)
+	}
+
+	prowConfig, err := config.Load(testInfraPath+"prow/config.yaml", testInfraPath+"prow/jobs", nil, "")
 	if err != nil {
 		log.Fatalf("failed to load prow job config: %s", err)
 	}
@@ -80,14 +86,5 @@ func main() {
 		fmt.Print(" ", key)
 		data, _ := yaml.Marshal(jobs)
 		os.WriteFile(fmt.Sprintf("data/jobs_%s.yaml", key), data, os.ModePerm)
-
-		issueBody := "**Description**\n"
-		issueBody += "The prow jobs owned by the " + key + " team have to be removed and if necessary substituted with something else.\n"
-		issueBody += "To simplify the process here is a list of prow jobs that should be migrated by " + key + " team.\n\n"
-		for _, job := range jobs {
-			issueBody += "  - [ ] " + job.Name + " \n"
-		}
-
-		os.WriteFile(fmt.Sprintf("data/issue_%s.md", key), []byte(issueBody), os.ModePerm)
 	}
 }
