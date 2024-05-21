@@ -23,10 +23,10 @@ plank:
         censoring_concurrency: 2 # 2 concurrent censoring
         censoring_buffer_size: 3092 # 3kB
       utility_images:
-        clonerefs: gcr.io/k8s-prow/clonerefs:v20230824-74e8146673
-        initupload: gcr.io/k8s-prow/initupload:v20230824-74e8146673
-        entrypoint: gcr.io/k8s-prow/entrypoint:v20230824-74e8146673
-        sidecar: gcr.io/k8s-prow/sidecar:v20230824-74e8146673
+        clonerefs: gcr.io/k8s-prow/clonerefs:v20240517-1d0ea98c9
+        initupload: gcr.io/k8s-prow/initupload:v20240517-1d0ea98c9
+        entrypoint: gcr.io/k8s-prow/entrypoint:v20240517-1d0ea98c9
+        sidecar: gcr.io/k8s-prow/sidecar:v20240517-1d0ea98c9
       gcs_configuration:
         bucket: kyma-prow-logs
         path_strategy: "explicit"
@@ -213,16 +213,6 @@ branch-protection:
             kyma-2.0-docu:
               required_pull_request_reviews:
                 require_code_owner_reviews: false
-        website:
-          branches:
-            main:
-              required_status_checks:
-                contexts:
-                  - "netlify/kyma-project/deploy-preview"
-            archive-snapshots:
-              required_status_checks:
-                contexts:
-                  - "netlify/kyma-project-old/deploy-preview"
         private-fn-for-e2e-serverless-tests:
           protect: false
     kyma-incubator:
@@ -265,7 +255,6 @@ tide:
     kyma-project/kyma: -1 # disable batch merging for Kyma repo
   merge_method:
     kyma-project/kyma: squash
-    kyma-project/website: squash
     kyma-project/test-infra: squash
     kyma-project/busola: squash
     kyma-project/control-plane: squash

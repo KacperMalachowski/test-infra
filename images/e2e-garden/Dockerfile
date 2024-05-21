@@ -1,4 +1,4 @@
-FROM golang:1.21.4-alpine AS base
+FROM golang:1.22.2-alpine AS base
 
 RUN set -eux; \
     apk add --no-cache \
@@ -22,7 +22,7 @@ RUN set -eux; \
 
 RUN adduser -D prow
 
-ARG CLUSTER_VERSION=v1.27.5
+ARG CLUSTER_VERSION=v1.28.6
 RUN curl -Lo /usr/local/bin/kubectl "https://storage.googleapis.com/kubernetes-release/release/${CLUSTER_VERSION}/bin/linux/$(go env GOARCH)/kubectl" && \
     chmod +x /usr/local/bin/kubectl
 

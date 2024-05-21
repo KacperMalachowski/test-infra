@@ -21,10 +21,10 @@ plank:
           censoring_concurrency: 2 # 2 concurrent censoring
           censoring_buffer_size: 3092 # 3kB
         utility_images:
-          clonerefs: europe-docker.pkg.dev/kyma-project/prod/k8s-prow/clonerefs:v20231204-274dc2b4
-          initupload: europe-docker.pkg.dev/kyma-project/prod/k8s-prow/initupload:v20231204-274dc2b4
-          entrypoint: europe-docker.pkg.dev/kyma-project/prod/k8s-prow/entrypoint:v20231204-274dc2b4
-          sidecar: europe-docker.pkg.dev/kyma-project/prod/k8s-prow/sidecar:v20231204-274dc2b4
+          clonerefs: gcr.io/k8s-prow/clonerefs:v20240517-1d0ea98c9
+          initupload: gcr.io/k8s-prow/initupload:v20240517-1d0ea98c9
+          entrypoint: gcr.io/k8s-prow/entrypoint:v20240517-1d0ea98c9
+          sidecar: gcr.io/k8s-prow/sidecar:v20240517-1d0ea98c9
         resources:
           clonerefs:
             requests:
@@ -252,16 +252,6 @@ branch-protection:
             kyma-2.0-docu:
               required_pull_request_reviews:
                 require_code_owner_reviews: false
-        website:
-          branches:
-            main:
-              required_status_checks:
-                contexts:
-                  - "netlify/kyma-project/deploy-preview"
-            archive-snapshots:
-              required_status_checks:
-                contexts:
-                  - "netlify/kyma-project-old/deploy-preview"
         community:
           protect: false
           branches:
@@ -297,7 +287,16 @@ branch-protection:
         kyma-environment-broker:
           required_status_checks:
             contexts:
-              - run-eslint
+              - "run-eslint"
+              - "run-go-linter"
+              - "run-go-checks"
+              - "run-go-tests / build"
+              - "run-keb-chart-tests / finish-keb-chart-tests"
+              - "markdown-link-check"
+              - "validate-labels"
+          exclude:
+            - "^gh-pages$"
+            - "^bump-chart-and-images-"
         btp-manager:
           required_status_checks:
             contexts:
@@ -305,25 +304,56 @@ branch-protection:
               - "run-e2e-tests / finish-e2e-tests"
               - "markdown-link-check"
               - "validate-labels"
+              - "run-go-linter"
+          exclude:
+            - "^sec-scanners-config-"
+            - "^sm-integration$"
+        template-operator:
+          required_status_checks:
+            contexts:
+              - "lint"
+              - "Run integration tests"
         lifecycle-manager:
           required_status_checks:
             contexts:
-              - "E2E (kyma-deletion)"
               - "E2E (kyma-metrics)"
               - "E2E (module-status-propagation)"
               - "E2E (module-without-default-cr)"
+              - "E2E (upgrade-under-deletion)"
+              - "E2E (self-signed-certificate-rotation)"
               - "E2E (non-blocking-deletion)"
               - "E2E (purge-controller)"
               - "E2E (purge-metrics)"
               - "E2E (watcher-enqueue)"
-              - "E2E (module-upgrade)"
+              - "E2E (module-upgrade-channel-switch)"
+              - "E2E (module-upgrade-new-version)"
               - "E2E (ca-certificate-rotation)"
+              - "E2E (kyma-deprovision-with-foreground-propagation)"
+              - "E2E (kyma-deprovision-with-background-propagation)"
+              - "E2E (misconfigured-kyma-secret)"
               - "Run 'make test'"
               - "kyma (unstable) alpha deploy -k config/control-plane"
               - "kyma (unstable) alpha deploy -k config/default"
               - "lint"
               - "Kustomize (dry-run)"
               - "Kustomize (dry-run-control-plane)"
+              - "markdown-link-check"
+              - "Diff manifests"
+        runtime-watcher:
+          required_status_checks:
+            contexts:
+            - "E2E (watcher-enqueue)"
+            - "E2E (watcher-metrics)"
+        modulectl:
+          required_status_checks:
+            contexts:
+            - "Build modulectl"
+            - "E2E Test - Create Scaffold"
+            - "Lint PR Title"
+            - "Lint Markdown Links"
+            - "Unit Test modulectl"
+            - "Validate Docs"
+            - "Verify Unit Test Coverage"
         cli:
           required_status_checks:
             contexts:
@@ -331,6 +361,22 @@ branch-protection:
               - "Run E2E tests (test-moduleconfig-module-creation)"
               - "Run E2E tests (test-same-version-module-creation)"
               - "lint"
+              - "docs validation"
+              - "unit tests"
+              - "build"
+          exclude:
+            - "^v3$"
+        serverless:
+          unmanaged: true
+        keda-manager:
+          unmanaged: true
+        warden:
+          unmanaged: true
+        docker-registry:
+          unmanaged: true
+        application-connector-manager:
+          unmanaged: true
+
     kyma-incubator:
       protect: true # protect all repos & branches in kyma-incubator org
       exclude:
@@ -341,6 +387,9 @@ branch-protection:
           branches:
             main:
               protect: true
+              required_status_checks:
+                # Require PR branch to be up-to-date with main
+                strict: true
         compass-console:
           protect: false
           branches:
@@ -351,6 +400,9 @@ branch-protection:
           branches:
             main:
               protect: true
+              required_status_checks:
+                # Require PR branch to be up-to-date with main
+                strict: true
         reconciler:
           protect: false
           branches:
@@ -369,7 +421,6 @@ tide:
     "*": -1 # disable batch merging for all repos
   merge_method:
     kyma-project/kyma: squash
-    kyma-project/website: squash
     kyma-project/test-infra: squash
     kyma-project/kyma-dashboard: squash
     kyma-project/busola: squash
@@ -390,11 +441,15 @@ tide:
     kyma-project/serverless: squash
     kyma-project/keda-manager: squash
     kyma-project/telemetry-manager: squash
+    kyma-project/kyma-metrics-collector: squash
     kyma-project/directory-size-exporter: squash
+    kyma-project/eventing-publisher-proxy: squash
     kyma-project/eventing-manager: squash
     kyma-project/eventing-auth-manager: squash
     kyma-project/eventing-tools: squash
     kyma-project/nats-manager: squash
+    kyma-project/docker-registry: squash
+    kyma-project/modulectl: squash
     kyma-incubator/compass: squash
     kyma-incubator/reconciler: squash
     kyma-incubator/compass-console: squash
@@ -413,8 +468,6 @@ tide:
     - labels:
         - lgtm
       missingLabels:
-        - needs-kind
-        - needs-area
         - do-not-merge/hold
         - do-not-merge/work-in-progress
         - do-not-merge/invalid-owners-file
@@ -427,23 +480,31 @@ tide:
         - lgtm
         - approved
       missingLabels:
-        - needs-kind
-        - needs-area
+        - do-not-merge/hold
+        - do-not-merge/work-in-progress
+        - do-not-merge/invalid-owners-file
+        - do-not-merge/invalid-commit-message
+      repos:
+        - kyma-project/k8s-prow
+      reviewApprovedRequired: true
+    - labels:
+        - lgtm
+        - approved
+        - ok-tested
+      missingLabels:
         - do-not-merge/hold
         - do-not-merge/work-in-progress
         - do-not-merge/invalid-owners-file
         - do-not-merge/invalid-commit-message
       repos:
         - kyma-incubator/compass
-        - kyma-project/k8s-prow
+        - kyma-incubator/ord-service
       reviewApprovedRequired: true
     # special query for automations
     - labels:
         - skip-review
       author: kyma-bot
       missingLabels:
-        - needs-kind
-        - needs-area
         - do-not-merge/hold
         - do-not-merge/work-in-progress
         - do-not-merge/invalid-owners-file
@@ -456,6 +517,20 @@ tide:
       kyma-project:
         repos:
           lifecycle-manager:
+            skip-unknown-contexts: true
+          kyma-environment-broker:
+            skip-unknown-contexts: true
+          btp-manager:
+            skip-unknown-contexts: true
+          serverless:
+            skip-unknown-contexts: true
+          keda-manager:
+            skip-unknown-contexts: true
+          cli:
+            skip-unknown-contexts: true
+          warden:
+            skip-unknown-contexts: true
+          docker-registry:
             skip-unknown-contexts: true
 
 presets:
@@ -481,11 +556,11 @@ presets:
       preset-cluster-version: "true"
     env:
       - name: AKS_CLUSTER_VERSION
-        value: "1.27"
+        value: "1.28"
       - name: GKE_CLUSTER_VERSION
-        value: "1.27"
+        value: "1.28"
       - name: GARDENER_CLUSTER_VERSION
-        value: "1.27"
+        value: "1.28"
   # test clusters log collector
   - labels:
       preset-log-collector-slack-token: "true"
@@ -1250,3 +1325,11 @@ presets:
       - name: compass-director-secret
         mountPath: /compass-director-secret
         readOnly: true
+  - labels:
+      preset-image-builder-ado-token: "true"
+    env:
+      - name: ADO_PAT
+        valueFrom:
+          secretKeyRef:
+            name: image-builder-ado-token
+            key: token

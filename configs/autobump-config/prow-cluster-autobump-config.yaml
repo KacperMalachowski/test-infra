@@ -11,10 +11,22 @@ includedConfigPaths:
   - "."
 excludedConfigPaths:
   - "prow/staging"
+  - "sec-scanners-config.yaml"
 targetVersion: "latest"
 prefixes:
   - name: "Prow"
-    prefix: "europe-docker.pkg.dev/kyma-project/prod/k8s-prow/"
+    prefix: "gcr.io/k8s-prow/"
     repo: "https://github.com/kyma-project/k8s-prow"
     summarise: true
     consistentImages: true
+    consistentImageExceptions:
+      - "gcr.io/k8s-prow/alpine"
+      - "gcr.io/k8s-prow/analyze"
+      - "gcr.io/k8s-prow/commenter"
+      - "gcr.io/k8s-prow/configurator"
+      - "gcr.io/k8s-prow/gcsweb"
+      - "gcr.io/k8s-prow/gencred"
+      - "gcr.io/k8s-prow/git"
+      - "gcr.io/k8s-prow/issue-creator"
+      - "gcr.io/k8s-prow/label_sync"
+      - "gcr.io/k8s-prow/pr-creator"

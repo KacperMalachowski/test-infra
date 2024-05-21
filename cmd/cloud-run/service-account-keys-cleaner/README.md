@@ -1,8 +1,8 @@
-# Cleanup of service account secrets
+# Cleanup of Service Account Secrets
 
 ## Overview
 
-The Cloud Run service deletes old keys for a GCP service account and updates the required secret data for all service account secrets stored in the Secret Manager. The service is triggered by a Cloud Scheduler job.
+The Cloud Run service deletes old keys for a Google Cloud service account and updates the required secret data for all service account secrets stored in the Secret Manager. The service is triggered by a Cloud Scheduler job.
 
 1. Cloud Scheduler calls the service-account-keys-cleaner service.
 2. For each secret stored in Secret Manager, the service executes the following steps:
@@ -13,7 +13,7 @@ The Cloud Run service deletes old keys for a GCP service account and updates the
     5. Removes old versions of keys for the service account.
     6. Removes old versions of a secret stored in Secret Manager.
 
-## Cloud Run service deployment
+## Cloud Run Service Deployment
 
 ServiceAccountKeysCleaner is deployed to Cloud Run applying Terraform config stored
 in [`./terraform` directory](../../../configs/terraform). `terraform apply` runs automatically on every PR changing
@@ -23,12 +23,12 @@ Terraform `.tf` files belonging to the application.
 2. Merge your changes to test-infra main branch to trigger Terraform execution.
 
 
-## GET parameters
+## GET Parameters
 
 The Cloud Function accepts the following GET parameters:
 
 | Name                           | Required | Description                                                           |
 | :----------------------------- | :------: | :-------------------------------------------------------------------- |
-| **project**                    |    Yes   | The name of the GCP project with Secret Manager.|
+| **project**                    |    Yes   | The name of the Google Cloud project with Secret Manager.|
 | **age**                        |    No    | The age in hours that the latest version of a secret has to exist before old versions can be deleted. It defaults to `5`. |
 | **dry_run**                    |    No    | The value controlling the `dry run` mode. It defaults to `false`.|

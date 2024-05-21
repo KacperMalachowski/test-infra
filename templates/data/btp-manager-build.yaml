@@ -6,6 +6,7 @@ templates:
           - repoName: "github.com/kyma-project/btp-manager"
             jobs:
               - jobConfig: # builds a docker image of the btp-manager tagged with the PR name
+                  image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
                   name: pull-btp-manager-build
                   annotations:
                     owner: "gopher"
@@ -22,6 +23,7 @@ templates:
                     - jobConfig_presubmit
               - jobConfig: # builds a docker image of the btp-manager tagged with the branch name
                   name: post-btp-manager-build
+                  image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
                   annotations:
                     owner: "gopher"
                     description: "BTP Manager image build on main"
@@ -40,52 +42,3 @@ templates:
                   global:
                     - kaniko_buildpack
                     - jobConfig_postsubmit
-              - jobConfig: # builds an OCI image with btp-operator module
-                  name: post-btp-manager-module-build
-                  annotations:
-                    owner: "gopher"
-                    description: "BTP Manager template image build on main"
-                  always_run: true
-                  labels:
-                    preset-sa-kyma-push-images: "true"
-                    preset-kyma-btp-manager-bot-github-token: "true"
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/prod/unsigned"
-                    IMG_REGISTRY: "europe-docker.pkg.dev/kyma-project/prod"
-                  securityContext:
-                    privileged: false
-                  command: "./scripts/release.sh"
-                  args:
-                    - "ci"
-                  branches:
-                    - ^\d+\.\d+\.\d+(?:-.*)?$
-                inheritedConfigs:
-                  global:
-                    - "image_buildpack-golang" # takes latest golang image
-                    - "jobConfig_default"
-                    - "jobConfig_postsubmit"
-              - jobConfig: # builds an OCI image with btp-operator module from the PR branch
-                  name: pull-btp-manager-module-build
-                  annotations:
-                    owner: "gopher"
-                    description: "BTP Manager template image build on PR"
-                  always_run: true
-                  optional: true
-                  labels:
-                    preset-sa-kyma-push-images: "true"
-                    preset-kyma-btp-manager-bot-github-token: "true"
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/dev/unsigned"
-                    IMG_REGISTRY: "europe-docker.pkg.dev/kyma-project/dev"
-                  securityContext:
-                    privileged: false
-                  command: "./scripts/create_module_image.sh"
-                  args:
-                    - "ci"
-                inheritedConfigs:
-                  global:
-                    - "jobConfig_default"
-                    - "jobConfig_presubmit"
-                    - "image_buildpack-golang" # takes latest golang image

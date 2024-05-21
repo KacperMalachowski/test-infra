@@ -9,6 +9,7 @@ presubmits:
         prow.k8s.io/pubsub.runID: "pull-runtime-watcher-img-build"
         prow.k8s.io/pubsub.topic: "prowjobs"
         preset-sa-kyma-push-images: "true"
+        preset-image-builder-ado-token: "true"
       always_run: true
       skip_report: false
       decorate: true
@@ -16,7 +17,7 @@ presubmits:
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -25,40 +26,87 @@ presubmits:
             command:
               - "/image-builder"
             args:
+              - "--build-in-ado=true"
               - "--name=runtime-watcher"
               - "--config=/config/kaniko-build-config.yaml"
               - "--context=runtime-watcher"
               - "--dockerfile=Dockerfile"
             resources:
               requests:
-                memory: 1.5Gi
-                cpu: 1
+                memory: 8Gi
+                cpu: 2
+              limits:
+                memory: 16Gi
+                cpu: 4
             volumeMounts:
               - name: config
                 mountPath: /config
-                readOnly: true
-              - name: signify-secret
-                mountPath: /secret
                 readOnly: true
         volumes:
           - name: config
             configMap:
               name: kaniko-build-config
-          - name: signify-secret
-            secret:
-              secretName: signify-dev-secret
 postsubmits:
   kyma-project/runtime-watcher:
-    - name: watcher-build-skr
+    - name: main-runtime-watcher-build
       annotations:
-        description: "build runtime watcher for skr"
+        description: "build runtime watcher image with the latest tag"
         owner: "jellyfish"
       labels:
         prow.k8s.io/pubsub.project: "sap-kyma-prow"
-        prow.k8s.io/pubsub.runID: "watcher-build-skr"
+        prow.k8s.io/pubsub.runID: "watcher-build-latest"
         prow.k8s.io/pubsub.topic: "prowjobs"
         preset-sa-kyma-push-images: "true"
-        preset-signify-prod-secret: "true"
+        preset-image-builder-ado-token: "true"
+      always_run: true
+      skip_report: false
+      decorate: true
+      cluster: trusted-workload
+      max_concurrency: 10
+      branches:
+        - ^main$
+      spec:
+        containers:
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
+            securityContext:
+              privileged: false
+              seccompProfile:
+                type: RuntimeDefault
+              allowPrivilegeEscalation: false
+            command:
+              - "/image-builder"
+            args:
+              - "--build-in-ado=true"
+              - "--name=runtime-watcher-skr"
+              - "--config=/config/kaniko-build-config.yaml"
+              - "--context=runtime-watcher"
+              - "--dockerfile=Dockerfile"
+              - "--tag=latest"
+            resources:
+              requests:
+                memory: 8Gi
+                cpu: 2
+              limits:
+                memory: 16Gi
+                cpu: 4
+            volumeMounts:
+              - name: config
+                mountPath: /config
+                readOnly: true
+        volumes:
+          - name: config
+            configMap:
+              name: kaniko-build-config
+    - name: release-runtime-watcher-build
+      annotations:
+        description: "build runtime watcher release image by semantic version tag"
+        owner: "jellyfish"
+      labels:
+        prow.k8s.io/pubsub.project: "sap-kyma-prow"
+        prow.k8s.io/pubsub.runID: "watcher-build-release"
+        prow.k8s.io/pubsub.topic: "prowjobs"
+        preset-sa-kyma-push-images: "true"
+        preset-image-builder-ado-token: "true"
       always_run: true
       skip_report: false
       decorate: true
@@ -68,7 +116,7 @@ postsubmits:
         - ^\d+\.\d+\.\d+(?:-.*)?$
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -77,6 +125,7 @@ postsubmits:
             command:
               - "/image-builder"
             args:
+              - "--build-in-ado=true"
               - "--name=runtime-watcher-skr"
               - "--config=/config/kaniko-build-config.yaml"
               - "--context=runtime-watcher"
@@ -87,13 +136,7 @@ postsubmits:
               - name: config
                 mountPath: /config
                 readOnly: true
-              - name: signify-secret
-                mountPath: /secret
-                readOnly: true
         volumes:
           - name: config
             configMap:
               name: kaniko-build-config
-          - name: signify-secret
-            secret:
-              secretName: signify-dev-secret

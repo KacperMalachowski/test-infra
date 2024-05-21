@@ -12,7 +12,7 @@ templates:
               - "^main$"
             pubsub_project: "sap-kyma-prow"
             pubsub_topic: "prowjobs"
-            image: eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b
+            image: europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704
             command: /image-builder
             request_memory: "1.5Gi"
             request_cpu: "1"
@@ -39,7 +39,7 @@ templates:
               preset-kyma-guard-bot-github-token: "true"
               preset-kind-volume-mounts: "true"
               preset-dind-enabled: "true"
-            image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-k3d:v20231206-59f0cdfa
+            image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-k3d:v20240516-d002e6ca
             command: "/init.sh"
             request_memory: "4Gi"
             request_cpu: "3"
@@ -49,55 +49,6 @@ templates:
           - repoName: github.com/kyma-project/application-connector-manager
             jobs:
               - jobConfig:
-                  global:
-                    - image_buildpack-golang # takes latest golang image
-                    - jobConfig_default
-                    - jobConfig_presubmit
-              - jobConfig:
-                  name: post-application-connector-module-build
-                  annotations:
-                    owner: framefrog
-                    description: application-connector module build job
-                  labels:
-                    preset-sa-kyma-push-images: "true"
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/prod/unsigned"
-                    IMG: "europe-docker.pkg.dev/kyma-project/prod/application-connector-manager:${PULL_BASE_SHA}"
-                  always_run: true
-                  command: "make"
-                  args:
-                    - "-C"
-                    - "hack/ci"
-                    - "module-build"
-                  branches:
-                    - ^main$ # any pr against main triggers this
-                inheritedConfigs:
-                  global:
-                    - image_buildpack-golang # takes latest golang image
-                    - jobConfig_default
-                    - jobConfig_postsubmit
-              - jobConfig:
-                  name: pre-application-connector-module-build
-                  annotations:
-                    owner: framefrog
-                    description: application-connector module build job
-                  labels:
-                    preset-sa-kyma-push-images: "true"
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/dev/unsigned"
-                    IMG: "europe-docker.pkg.dev/kyma-project/dev/application-connector-manager:PR-${PULL_NUMBER}"
-                    MODULE_SHA: "PR-${PULL_NUMBER}"
-                  always_run: true
-                  command: "make"
-                  args:
-                    - "-C"
-                    - "hack/ci"
-                    - "module-build"
-                  branches:
-                    - ^main$ # any pr against main triggers this
-                inheritedConfigs:
                   global:
                     - image_buildpack-golang # takes latest golang image
                     - jobConfig_default
@@ -139,25 +90,6 @@ templates:
                     - jobConfig_postsubmit
                   local:
                     - job_build
-              - jobConfig:
-                  name: pre-main-application-connector-manager-verify
-                  annotations:
-                    owner: framefrog
-                    description: runs application-connector manager verity job on k3d VM
-                  always_run: "true"
-                  optional: "false"
-                  args:
-                    - bash
-                    - -c
-                    - make -C hack/ci k3d-integration-test
-                inheritedConfigs:
-                  global:
-                    - jobConfig_default
-                    - privileged
-                    - jobConfig_presubmit # TODO: Prepare application-connector Image
-                    - extra_refs_test-infra
-                  local:
-                    - dind_job_k3d
               - jobConfig:
                   name: post-main-application-connector-manager-upgrade-latest-to-main
                   annotations:

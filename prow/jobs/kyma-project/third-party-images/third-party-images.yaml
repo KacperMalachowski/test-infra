@@ -6,7 +6,7 @@ presubmits: # runs on PRs
     - name: pre-main-tpi-cloudsql-proxy
       annotations:
         description: "builds cloudsql-proxy image"
-        owner: "goat"
+        owner: "operations"
       labels:
         prow.k8s.io/pubsub.project: "sap-kyma-prow"
         prow.k8s.io/pubsub.runID: "pre-main-tpi-cloudsql-proxy"
@@ -19,7 +19,7 @@ presubmits: # runs on PRs
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -67,7 +67,7 @@ presubmits: # runs on PRs
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -115,7 +115,7 @@ presubmits: # runs on PRs
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -163,7 +163,7 @@ presubmits: # runs on PRs
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -210,7 +210,7 @@ presubmits: # runs on PRs
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b-buildkit"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: true
               seccompProfile:
@@ -229,8 +229,10 @@ presubmits: # runs on PRs
                 value: "--oci-worker-no-process-sandbox"
             resources:
               requests:
-                memory: 1.5Gi
+                memory: 6Gi
                 cpu: 1
+              limits:
+                memory: 6Gi
             volumeMounts:
               - name: share
                 mountPath: /home/user/.local/share/buildkit
@@ -264,7 +266,7 @@ presubmits: # runs on PRs
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -298,13 +300,62 @@ presubmits: # runs on PRs
           - name: signify-secret
             secret:
               secretName: signify-dev-secret
-  
+    - name: pre-main-tpi-telemetry-self-monitor
+      annotations:
+        description: "Pre-submit job to build Telemetry self-monitor image."
+        owner: "huskies"
+      labels:
+        prow.k8s.io/pubsub.project: "sap-kyma-prow"
+        prow.k8s.io/pubsub.runID: "pre-main-tpi-telemetry-self-monitor"
+        prow.k8s.io/pubsub.topic: "prowjobs"
+        preset-sa-kyma-push-images: "true"
+      run_if_changed: '^telemetry-self-monitor/'
+      skip_report: false
+      decorate: true
+      cluster: untrusted-workload
+      max_concurrency: 10
+      spec:
+        containers:
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
+            securityContext:
+              privileged: false
+              seccompProfile:
+                type: RuntimeDefault
+              allowPrivilegeEscalation: false
+            command:
+              - "/image-builder"
+            args:
+              - "--name=tpi/telemetry-self-monitor"
+              - "--config=/config/kaniko-build-config.yaml"
+              - "--context=telemetry-self-monitor"
+              - "--dockerfile=Dockerfile"
+              - "--env-file=envs"
+            resources:
+              requests:
+                memory: 6Gi
+                cpu: 1
+              limits:
+                memory: 6Gi
+            volumeMounts:
+              - name: config
+                mountPath: /config
+                readOnly: true
+              - name: signify-secret
+                mountPath: /secret
+                readOnly: true
+        volumes:
+          - name: config
+            configMap:
+              name: kaniko-build-config
+          - name: signify-secret
+            secret:
+              secretName: signify-dev-secret
 postsubmits: # runs on main
   kyma-project/third-party-images:
     - name: post-main-tpi-cloudsql-proxy
       annotations:
         description: "builds cloudsql-proxy image"
-        owner: "goat"
+        owner: "operations"
       labels:
         prow.k8s.io/pubsub.project: "sap-kyma-prow"
         prow.k8s.io/pubsub.runID: "post-main-tpi-cloudsql-proxy"
@@ -318,7 +369,7 @@ postsubmits: # runs on main
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -368,7 +419,7 @@ postsubmits: # runs on main
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -422,7 +473,7 @@ postsubmits: # runs on main
           channel: huskies-notifications
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -472,7 +523,7 @@ postsubmits: # runs on main
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -520,7 +571,7 @@ postsubmits: # runs on main
       max_concurrency: 10
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b-buildkit"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: true
               seccompProfile:
@@ -541,8 +592,10 @@ postsubmits: # runs on main
                 value: "--oci-worker-no-process-sandbox"
             resources:
               requests:
-                memory: 1.5Gi
+                memory: 6Gi
                 cpu: 1
+              limits:
+                memory: 6Gi
             volumeMounts:
               - name: share
                 mountPath: /home/user/.local/share/buildkit
@@ -580,7 +633,7 @@ postsubmits: # runs on main
           channel: huskies-notifications
       spec:
         containers:
-          - image: "eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b"
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             securityContext:
               privileged: false
               seccompProfile:
@@ -595,6 +648,61 @@ postsubmits: # runs on main
               - "--dockerfile=Dockerfile"
               - "--env-file=envs"
               - "--tag={{ .Env \"OTEL_VERSION\" }}-{{ .ShortSHA }}"
+            resources:
+              requests:
+                memory: 6Gi
+                cpu: 1
+              limits:
+                memory: 6Gi
+            volumeMounts:
+              - name: config
+                mountPath: /config
+                readOnly: true
+              - name: signify-secret
+                mountPath: /secret
+                readOnly: true
+        volumes:
+          - name: config
+            configMap:
+              name: kaniko-build-config
+          - name: signify-secret
+            secret:
+              secretName: signify-dev-secret
+    - name: post-main-tpi-telemetry-self-monitor
+      annotations:
+        description: "Post-submit job to build Telemetry self-monitor image."
+        owner: "huskies"
+      labels:
+        prow.k8s.io/pubsub.project: "sap-kyma-prow"
+        prow.k8s.io/pubsub.runID: "post-main-tpi-telemetry-self-monitor"
+        prow.k8s.io/pubsub.topic: "prowjobs"
+        preset-sa-kyma-push-images: "true"
+        preset-signify-prod-secret: "true"
+      run_if_changed: '^telemetry-self-monitor/'
+      skip_report: false
+      decorate: true
+      cluster: trusted-workload
+      max_concurrency: 10
+      reporter_config:
+        slack:
+          channel: huskies-notifications
+      spec:
+        containers:
+          - image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
+            securityContext:
+              privileged: false
+              seccompProfile:
+                type: RuntimeDefault
+              allowPrivilegeEscalation: false
+            command:
+              - "/image-builder"
+            args:
+              - "--name=tpi/telemetry-self-monitor"
+              - "--config=/config/kaniko-build-config.yaml"
+              - "--context=telemetry-self-monitor"
+              - "--dockerfile=Dockerfile"
+              - "--env-file=envs"
+              - "--tag={{ .Env \"PROMETHEUS_VERSION\" }}-{{ .ShortSHA }}"
             resources:
               requests:
                 memory: 6Gi

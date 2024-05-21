@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/kyma-project/test-infra/pkg/github/bumper"
-	"io"
 	"log"
 	"os"
 	"sort"
+
+	"github.com/kyma-project/test-infra/pkg/github/bumper"
 
 	"github.com/kyma-project/test-infra/pkg/extractimageurls"
 	"github.com/kyma-project/test-infra/pkg/securityconfig"
@@ -35,9 +35,6 @@ var (
 	// AutobumpConfig contains root path to config for autobumper for sec-scanners-config
 	AutobumpConfig string
 
-	// InRepoConfig contains path to the configuration of repositories with Prow inrepo config enabled
-	InRepoConfig string
-
 	// GithubTokenPath path to file containing github token for fetching inrepo config
 	GithubTokenPath string
 )
@@ -46,6 +43,7 @@ var rootCmd = &cobra.Command{
 	Use:   "image-detector",
 	Short: "Image Detector CLI",
 	Long:  "Command-Line tool to retrieve list of images and update security-config",
+	//nolint:revive
 	Run: func(cmd *cobra.Command, args []string) {
 		// load security config
 		reader, err := os.Open(SecScannerConfig)
@@ -100,38 +98,6 @@ var rootCmd = &cobra.Command{
 			images = append(images, imgs...)
 		}
 
-		// get prow jobs configuration from in-repo configuration
-		if InRepoConfig != "" {
-			// load InRepo configuration
-			file, err := os.Open(InRepoConfig)
-			if err != nil {
-				log.Fatalf("failed to load inrepo configuration: %s", err)
-			}
-
-			// parse configuration
-			var cfg []extractimageurls.Repository
-			err = yaml.NewDecoder(file).Decode(&cfg)
-			if err != nil {
-				log.Fatalf("failed to decode inrepo configuration: %s", err)
-			}
-
-			// load github token from env
-			ghToken, err := loadGithubToken(GithubTokenPath)
-			if err != nil {
-				log.Fatalf("failed to load github token from %s: %s", GithubTokenPath, err)
-			}
-
-			for _, repo := range cfg {
-				imgs, err := extractimageurls.FromInRepoConfig(repo, ghToken)
-				if err != nil {
-					log.Printf("warn: failed to extract image urls from repository %s: %v", &repo, err)
-					continue
-				}
-
-				images = append(images, imgs...)
-			}
-		}
-
 		images = extractimageurls.UniqueImages(images)
 
 		// sort list of images to have consistent order
@@ -159,7 +125,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&SecScannerConfig, "sec-scanner-config", "", "path to the security scanner config field")
 	rootCmd.PersistentFlags().StringVar(&KubernetesFiles, "kubernetes-dir", "", "path to the directory containing Kubernetes deployments")
 	rootCmd.PersistentFlags().StringVar(&AutobumpConfig, "autobump-config", "", "path to the config for autobumper for security scanner config")
-	rootCmd.PersistentFlags().StringVar(&InRepoConfig, "inrepo-config", "", "path to the configuration of repositories with Prow inrepo config enabled")
 	rootCmd.PersistentFlags().StringVar(&GithubTokenPath, "github-token-path", "/etc/github/token", "path to github token for fetching inrepo config")
 
 	rootCmd.MarkFlagRequired("sec-scanner-config")
@@ -171,21 +136,6 @@ func main() {
 	}
 }
 
-// loadGithubToken read github token from given file
-func loadGithubToken(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return "", err
-	}
-
-	return string(data), nil
-}
-
 // client is bumper client
 type client struct {
 	o *options
@@ -193,6 +143,8 @@ type client struct {
 
 // Changes returns a slice of functions, each one does some stuff, and
 // returns commit message for the changes
+//
+//nolint:revive
 func (c *client) Changes() []func(context.Context) (string, []string, error) {
 	return []func(context.Context) (string, []string, error){
 		func(ctx context.Context) (string, []string, error) {

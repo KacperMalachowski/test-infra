@@ -15,7 +15,7 @@ templates:
             decorate: "true"
             pubsub_project: "sap-kyma-prow"
             pubsub_topic: "prowjobs"
-            image: eu.gcr.io/sap-kyma-neighbors-dev/image-builder:v20230313-8dfce5f0b
+            image: "europe-docker.pkg.dev/kyma-project/prod/image-builder:v20240516-5a9a1704"
             command: /image-builder
             request_memory: "1.5Gi"
             request_cpu: "1"
@@ -43,69 +43,16 @@ templates:
           vm_job_k3d:
             annotations:
           e2e:
-            image: "europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-garden:v20231206-59f0cdfa"
+            image: "europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-garden:v20240516-d002e6ca"
             securityContext: #temporary we need permissions to create folders for tooling, see `make install`
               runAsRoot: true
           job_module_build:
             labels:
               preset-sa-kyma-push-images: "true"
-            image: "europe-docker.pkg.dev/kyma-project/prod/testimages/buildpack-go:v20231206-59f0cdfa"
+            image: "europe-docker.pkg.dev/kyma-project/prod/testimages/buildpack-go:v20240516-d002e6ca"
         jobConfigs:
           - repoName: github.com/kyma-project/istio
             jobs:
-              - jobConfig:
-                  name: pull-istio-module-build
-                  annotations:
-                    owner: goat
-                    description: build istio module image
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/dev/unsigned"
-                    IMG: "europe-docker.pkg.dev/kyma-project/dev/istio-manager:PR-${PULL_NUMBER}"
-                    MODULE_SHA: "PR-${PULL_NUMBER}"
-                  command: "make"
-                  args:
-                    - "-C"
-                    - "hack/ci"
-                    - "all" # run test make target of operator
-                  branches:
-                    - ^main$
-                    - ^release-\d+\.\d+$
-                inheritedConfigs:
-                  global:
-                    - jobConfig_default
-                    - jobConfig_presubmit
-                  local:
-                    - job_default
-                    - job_skip_config
-                    - job_module_build
-              - jobConfig:
-                  name: post-istio-module-build
-                  annotations:
-                    owner: goat
-                    description: build istio module image
-                  labels:
-                    preset-sa-kyma-push-images: "true"
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/prod/unsigned"
-                    IMG: "europe-docker.pkg.dev/kyma-project/prod/istio-manager:${PULL_BASE_SHA}"
-                  command: "make"
-                  args:
-                    - "-C"
-                    - "hack/ci"
-                    - "all"
-                  branches:
-                    - ^main$
-                inheritedConfigs:
-                  global:
-                    - jobConfig_default
-                    - jobConfig_postsubmit
-                    - jobConfig_slack_goat
-                  local:
-                    - job_default
-                    - job_skip_config
-                    - job_module_build
               - jobConfig:
                   name: rel-istio-build
                   always_run: true
@@ -113,7 +60,7 @@ templates:
                     owner: goat
                     description: builds istio operator image on release
                   branches:
-                    - '^\d+\.\d+\.\d+(?:-.*)?$'
+                    - '^\d+\.\d+\.\d+$'
                   labels:
                     preset-signify-prod-secret: "true"
                   args:
@@ -121,7 +68,8 @@ templates:
                     - "--config=/config/kaniko-build-config.yaml"
                     - "--context=."
                     - "--dockerfile=Dockerfile"
-                    - '--tag={{`{{.Env \"PULL_BASE_REF\" }}`}}'
+                    - "--tag=$(PULL_BASE_REF)"
+                    - "--build-arg=VERSION=$(PULL_BASE_REF)"
                 inheritedConfigs:
                   global:
                     - jobConfig_postsubmit
@@ -130,33 +78,30 @@ templates:
                     - job_default
                     - job_build
               - jobConfig:
-                  name: rel-istio-module-build
+                  name: rel-istio-experimental-build
                   always_run: true
                   annotations:
                     owner: goat
-                    description: builds istio module template on release
+                    description: builds istio operator experimental image on release
                   branches:
-                    - '^\d+\.\d+\.\d+(?:-.*)?$'
+                    - '^\d+\.\d+\.\d+-experimental$'
                   labels:
-                    preset-sa-kyma-push-images: "true"
-                  env:
-                    KUSTOMIZE_VERSION: "v4.5.6"
-                    MODULE_REGISTRY: "europe-docker.pkg.dev/kyma-project/prod/unsigned"
-                    IMG: "europe-docker.pkg.dev/kyma-project/prod/istio-manager:${PULL_BASE_REF}"
-                    MODULE_VERSION: "${PULL_BASE_REF}"
-                  command: "make"
+                    preset-signify-prod-secret: "true"
                   args:
-                    - "-C"
-                    - "hack/ci"
-                    - "all"
+                    - "--name=istio-manager"
+                    - "--config=/config/kaniko-build-config.yaml"
+                    - "--context=."
+                    - "--dockerfile=Dockerfile"
+                    - "--tag=$(PULL_BASE_REF)"
+                    - "--build-arg=VERSION=$(PULL_BASE_REF)"
+                    - "--build-arg=GO_BUILD_TAGS=experimental"
                 inheritedConfigs:
                   global:
-                    - jobConfig_default
                     - jobConfig_postsubmit
                     - jobConfig_slack_goat
                   local:
                     - job_default
-                    - job_module_build
+                    - job_build
               - jobConfig:
                   name: pull-istio-operator-build
                   annotations:
@@ -167,6 +112,7 @@ templates:
                     - "--config=/config/kaniko-build-config.yaml"
                     - "--context=."
                     - "--dockerfile=Dockerfile"
+                    - "--build-arg=VERSION=PR-$(PULL_NUMBER)"
                   branches:
                     - ^main$
                     - ^release-\d+\.\d+$
@@ -189,9 +135,11 @@ templates:
                     - "--config=/config/kaniko-build-config.yaml"
                     - "--context=."
                     - "--dockerfile=Dockerfile"
-                    - '--tag={{`{{ .Env \"PULL_BASE_SHA\" }}`}}'
+                    - "--tag=$(PULL_BASE_SHA)"
+                    - "--build-arg=VERSION=$(PULL_BASE_REF)"
                   branches:
                     - ^main$
+                    - ^release-\d+\.\d+$
                 inheritedConfigs:
                   global:
                     - jobConfig_postsubmit
@@ -201,143 +149,28 @@ templates:
                     - job_build
                     - job_skip_config
               - jobConfig:
-                  name: pull-istio-operator-integration-gcp
+                  name: post-istio-operator-experimental-build
                   annotations:
                     owner: goat
-                    description: runs istio operator integration tests on Gardener GCP cluster
-                  always_run: true
-                  command: "make"
+                    description: build istio operator experimental image
+                  labels:
+                    preset-signify-prod-secret: "true"
                   args:
-                    - "gardener-istio-integration-test"
+                    - "--name=istio-manager"
+                    - "--config=/config/kaniko-build-config.yaml"
+                    - "--context=."
+                    - "--dockerfile=Dockerfile"
+                    - "--tag=$(PULL_BASE_SHA)-experimental"
+                    - "--build-arg=VERSION=$(PULL_BASE_REF)-experimental"
+                    - "--build-arg=GO_BUILD_TAGS=experimental"
                   branches:
                     - ^main$
                     - ^release-\d+\.\d+$
-                  decoration_config:
-                    timeout: 14400000000000 # 4h
-                    grace_period: 600000000000 # 10min
-                  labels:
-                    preset-gardener-gcp-kyma-integration: "true"
-                    preset-cluster-version: "true"
-                    preset-sa-kyma-dns-serviceuser: "true"
-                    preset-kyma-guard-bot-github-token: "true"
-                  env:
-                    TEST_SA_ACCESS_KEY_PATH: "/sa-kyma-dns-serviceuser/service-account.json"
-                    GARDENER_REGION: "europe-west3"
-                    GARDENER_ZONES: "europe-west3-c,europe-west3-b,europe-west3-a"
-                    MACHINE_TYPE: "n2-standard-4"
-                    DISK_SIZE: 50
-                    DISK_TYPE: "pd-standard"
-                    SCALER_MAX: 20
-                    SCALER_MIN: 3
-                inheritedConfigs:
-                  global:
-                    - jobConfig_presubmit
-                    - jobConfig_default
-                  local:
-                    - job_default
-                    - e2e
-                    - job_skip_config
-              - jobConfig:
-                  name: nightly-istio-performance-test-gcp
-                  cron: "0 0 * * *"
-                  extra_refs:
-                    istio:
-                      - org: kyma-project
-                        repo: istio
-                        base_ref: main
-                  annotations:
-                    owner: goat
-                    description: runs istio performance tests on Gardener GCP cluster
-                  image: "europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-gcloud:v20231206-59f0cdfa"
-                  securityContext: #temporary we need permissions to create folders for tooling, see `make install`
-                    runAsRoot: true
-                  command: "make"
-                  args:
-                    - "gardener-perf-test"
-                  decoration_config:
-                    timeout: 14400000000000 # 4h
-                    grace_period: 600000000000 # 10min
-                  labels:
-                    preset-gardener-gcp-kyma-integration: "true"
-                    preset-cluster-version: "true"
-                    preset-sa-kyma-dns-serviceuser: "true"
-                    preset-kyma-guard-bot-github-token: "true"
-                  env:
-                    TEST_SA_ACCESS_KEY_PATH: "/sa-kyma-dns-serviceuser/service-account.json"
-                    GARDENER_REGION: "europe-west3"
-                    GARDENER_ZONES: "europe-west3-c,europe-west3-b,europe-west3-a"
-                    MACHINE_TYPE: "n2-standard-8"
-                    DISK_SIZE: 50
-                    DISK_TYPE: "pd-standard"
-                    SCALER_MAX: 20
-                    SCALER_MIN: 3
-                inheritedConfigs:
-                  global:
-                    - jobConfig_default
-                    - jobConfig_periodic
-                    - jobConfig_slack_goat
-                  local:
-                    - job_default
-              - jobConfig:
-                  name: post-istio-integration-aws-specific
-                  annotations:
-                    owner: goat
-                    description: runs istio operator integration tests specific to AWS
-                  always_run: true
-                  command: bash
-                  args:
-                    - -c
-                    - >-
-                      mkdir -p /prow-tools && ln -s /usr/local/bin/jobguard /prow-tools/jobguard && ./tests/integration/scripts/integration-test-aws-specific.sh
-                  branches:
-                    - ^main$
-                  decoration_config:
-                    timeout: 14400000000000 # 4h
-                    grace_period: 600000000000 # 10min
-                  labels:
-                    preset-gardener-aws-kyma-integration: "true"
-                    preset-cluster-version: "true"
-                    preset-kyma-guard-bot-github-token: "true"
-                  env:
-                    IMG: "europe-docker.pkg.dev/kyma-project/prod/istio-manager:${PULL_BASE_SHA}"
-                    WAIT_FOR_JOB_NAME: "post-istio-operator-build"
                 inheritedConfigs:
                   global:
                     - jobConfig_postsubmit
-                    - jobConfig_default
                     - jobConfig_slack_goat
                   local:
                     - job_default
-                    - e2e
-                    - job_skip_config
-              - jobConfig:
-                  name: pull-istio-integration-aws-specific
-                  annotations:
-                    owner: goat
-                    description: runs istio operator integration tests specific to AWS
-                  always_run: true
-                  command: bash
-                  args:
-                    - -c
-                    - >-
-                      mkdir -p /prow-tools && ln -s /usr/local/bin/jobguard /prow-tools/jobguard && ./tests/integration/scripts/integration-test-aws-specific.sh
-                  branches:
-                    - ^release-\d+\.\d+$
-                  decoration_config:
-                    timeout: 14400000000000 # 4h
-                    grace_period: 600000000000 # 10min
-                  labels:
-                    preset-gardener-aws-kyma-integration: "true"
-                    preset-cluster-version: "true"
-                    preset-kyma-guard-bot-github-token: "true"
-                  env:
-                    IMG: "europe-docker.pkg.dev/kyma-project/dev/istio-manager:PR-${PULL_NUMBER}"
-                    WAIT_FOR_JOB_NAME: "pull-istio-operator-build"
-                inheritedConfigs:
-                  global:
-                    - jobConfig_presubmit
-                    - jobConfig_default
-                  local:
-                    - job_default
-                    - e2e
+                    - job_build
                     - job_skip_config

@@ -4,7 +4,7 @@
 
 Image Detector is a tool for updating the security scanner config with the list of images in the Prow cluster. To achieve that, it receives paths to files used to deploy Prow or its components.
 
-## Key features:
+## Key Features:
 
 Image Detector:
 * Extracts image URLs from various file types
@@ -28,9 +28,6 @@ Usage of image-detector:
     path to the Tekton catalog directory
   --autobump-config
     path to the config for autobumper for security scanner config
-  --inrepo-config
-    path to the configuration of repositories with Prow inrepo config enabled
   --github-token-path
     path to github token for fetching inrepo config (default: "/etc/github/token")
 ```
-

@@ -23,7 +23,7 @@ postsubmits:
           channel: jellyfish-notifications
       spec:
         containers:
-          - image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-gcloud:v20231206-59f0cdfa
+          - image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-gcloud:v20240516-d002e6ca
             command: [ "bash" ]
             securityContext:
               privileged: false
@@ -42,8 +42,8 @@ postsubmits:
                 value: "true"
             resources:
               requests:
-                cpu: 1
-                memory: 2Gi
-              limits:
                 cpu: 2
-                memory: 4Gi
+                memory: 8Gi
+              limits:
+                cpu: 4
+                memory: 16Gi

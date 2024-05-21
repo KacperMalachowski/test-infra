@@ -81,7 +81,7 @@ spec:
   purpose: development
   cloudProfileName: gcp
   kubernetes:
-    version: 1.27.5
+    version: 1.28.6
   provider:
     controlPlaneConfig:
       apiVersion: gcp.provider.extensions.gardener.cloud/v1alpha1
@@ -97,7 +97,7 @@ spec:
       - machine:
           image:
             name: gardenlinux
-            version: 934.8.0
+            version: 934.11.0
           type: n1-standard-4
         maxSurge: 1
         maxUnavailable: 0

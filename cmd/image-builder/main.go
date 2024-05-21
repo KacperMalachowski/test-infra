@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	adopipelines "github.com/kyma-project/test-infra/pkg/azuredevops/pipelines"
+	"github.com/kyma-project/test-infra/pkg/github/actions"
 	"github.com/kyma-project/test-infra/pkg/sets"
 	"github.com/kyma-project/test-infra/pkg/sign"
 	"github.com/kyma-project/test-infra/pkg/tags"
@@ -43,16 +45,18 @@ type options struct {
 	platforms  sets.Strings
 	exportTags bool
 	// signOnly only sign images. No build will be performed.
-	signOnly      bool
-	imagesToSign  sets.Strings
-	buildInADO    bool
-	parseTagsOnly bool
+	signOnly              bool
+	imagesToSign          sets.Strings
+	buildInADO            bool
+	adoPreviewRun         bool
+	adoPreviewRunYamlPath string
+	testKanikoBuildConfig bool
+	parseTagsOnly         bool
+	oidcToken             string
+	azureAccessToken      string
+	ciSystem              CISystem
+	gitState              GitStateConfig
 }
-
-const (
-	PlatformLinuxAmd64 = "linux/amd64"
-	PlatformLinuxArm64 = "linux/arm64"
-)
 
 // parseVariable returns a build-arg.
 // Keys are set to upper-case.
@@ -173,57 +177,50 @@ func runInKaniko(o options, name string, destinations, platforms []string, build
 	return cmd.Run()
 }
 
+// prepareADOTemplateParameters is a function that prepares the parameters for the Azure DevOps oci-image-builder pipeline.
+// These parameters are used to trigger the pipeline with API call and build the image in the ADO environment.
+// It takes an options struct as an argument and returns an OCIImageBuilderTemplateParams struct and an error.
+// The function fetches various environment variables such as REPO_NAME, REPO_OWNER, JOB_TYPE, PULL_NUMBER, PULL_BASE_SHA, and PULL_PULL_SHA.
+// It validates these variables are present and sets them in the templateParameters struct.
+// It also sets other parameters from the options struct such as imageName, dockerfilePath, buildContext, exportTags, useKanikoConfigFromPR, buildArgs, and imageTags.
+// The function validates the templateParameters and returns it along with any error that occurred during the process.
+// TODO: rename this function to indicate that it's preparing ADO pipeline parameters for oci-image-builder pipeline.
 func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilderTemplateParams, error) {
 	templateParameters := make(adopipelines.OCIImageBuilderTemplateParams)
 
-	repo, present := os.LookupEnv("REPO_NAME")
-	if !present {
-		return nil, fmt.Errorf("REPO_NAME environment variable is not set, please set it to valid repository name")
-	}
-	templateParameters.SetRepoName(repo)
+	templateParameters.SetRepoName(options.gitState.RepositoryName)
 
-	owner, present := os.LookupEnv("REPO_OWNER")
-	if !present {
-		return nil, fmt.Errorf("REPO_OWNER environment variable is not set, please set it to valid repository owner")
-	}
-	templateParameters.SetRepoOwner(owner)
+	templateParameters.SetRepoOwner(options.gitState.RepositoryOwner)
 
-	jobType, present := os.LookupEnv("JOB_TYPE")
-	if !present {
-		return nil, fmt.Errorf("JOB_TYPE environment variable is not set, please set it to valid job type")
-	}
-	if jobType == "presubmit" {
+	if options.gitState.JobType == "presubmit" {
 		templateParameters.SetPresubmitJobType()
-	} else if jobType == "postsubmit" {
+	} else if options.gitState.JobType == "postsubmit" {
 		templateParameters.SetPostsubmitJobType()
-	} else {
-		return nil, fmt.Errorf("JOB_TYPE environment variable is not set to valid value, please set it to either 'presubmit' or 'postsubmit'")
 	}
 
-	number, present := os.LookupEnv("PULL_NUMBER")
-	if !present {
-		return nil, fmt.Errorf("PULL_NUMBER environment variable is not set, please set it to valid pull request number")
+	if options.gitState.IsPullRequest() {
+		templateParameters.SetPullNumber(fmt.Sprint(options.gitState.PullRequestNumber))
 	}
-	templateParameters.SetPullNumber(number)
 
-	baseSHA, present := os.LookupEnv("PULL_BASE_SHA")
-	if !present {
-		return nil, fmt.Errorf("PULL_BASE_SHA environment variable is not set, please set it to valid pull base SHA")
-	}
-	templateParameters.SetBaseSHA(baseSHA)
+	templateParameters.SetBaseSHA(options.gitState.BaseCommitSHA)
 
-	pullSHA, present := os.LookupEnv("PULL_PULL_SHA")
-	if present {
-		templateParameters.SetPullSHA(pullSHA)
+	if options.gitState.IsPullRequest() {
+		templateParameters.SetPullSHA(options.gitState.PullHeadCommitSHA)
 	}
 
 	templateParameters.SetImageName(options.name)
 
 	templateParameters.SetDockerfilePath(options.dockerfile)
 
+	if len(options.envFile) > 0 {
+		templateParameters.SetEnvFilePath(options.envFile)
+	}
+
 	templateParameters.SetBuildContext(options.context)
 
 	templateParameters.SetExportTags(options.exportTags)
+
+	templateParameters.SetUseKanikoConfigFromPR(options.testKanikoBuildConfig)
 
 	if len(options.buildArgs) > 0 {
 		templateParameters.SetBuildArgs(options.buildArgs.String())
@@ -231,6 +228,10 @@ func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilder
 
 	if len(options.tags) > 0 {
 		templateParameters.SetImageTags(options.tags.String())
+	}
+
+	if options.ciSystem == GithubActions {
+		templateParameters.SetAuthorization(options.oidcToken)
 	}
 
 	err := templateParameters.Validate()
@@ -241,55 +242,125 @@ func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilder
 	return templateParameters, nil
 }
 
+// buildInADO is a function that triggers the Azure DevOps (ADO) pipeline to build an image.
+// It takes an options struct as an argument and returns an error.
+// The function fetches the ADO_PAT environment variable and validates it's present.
+// ADO_PAT holds personal access token and is used to authenticate with the ADO API.
+// The function prepares the ADO pipeline parameters by calling the prepareADOTemplateParameters function.
+// It creates a new ADO client and prepares the ADO pipeline run arguments.
+// The function triggers the ADO build pipeline and waits for the pipeline run to finish.
+// It fetches the ADO pipeline run logs and prints them.
+// The function can trigger the ADO pipeline in preview mode if the adoPreviewRun flag is set to true.
+// In preview mode, the function prints the final yaml of the ADO pipeline run.
+// Running in preview mode requires the adoPreviewRunYamlPath flag to be set to the path of the yaml file with the ADO pipeline definition.
+// This is used for pipeline syntax validation.
+// If the pipeline run fails, the function returns an error.
+// If the pipeline run is successful, the function returns nil.
 // TODO(dekiel): refactor this function to accept clients as parameters to make it testable with mocks.
 func buildInADO(o options) error {
 	fmt.Println("Building image in ADO pipeline.")
-	adoPAT, present := os.LookupEnv("ADO_PAT")
-	if !present {
-		return fmt.Errorf("build in ADO failed, ADO_PAT environment variable is not set, please set it to valid ADO PAT")
+	// Getting Azure DevOps Personal Access Token (ADO_PAT) from environment variable for authentication with ADO API when it's not set via flag.
+	if o.azureAccessToken == "" {
+		adoPAT, present := os.LookupEnv("ADO_PAT")
+		if !present {
+			return fmt.Errorf("build in ADO failed, ADO_PAT environment variable is not set, please set it to valid ADO PAT")
+		}
+		o.azureAccessToken = adoPAT
 	}
 
 	fmt.Println("Preparing ADO template parameters.")
+	// Preparing ADO pipeline parameters.
 	templateParameters, err := prepareADOTemplateParameters(o)
 	if err != nil {
 		return fmt.Errorf("build in ADO failed, failed preparing ADO template parameters, err: %s", err)
 	}
+	fmt.Printf("Using TemplateParameters: %+v\n", templateParameters)
 
-	fmt.Println("Running ADO pipeline.")
-	adoClient := adopipelines.NewClient(o.AdoConfig.ADOOrganizationURL, adoPAT)
+	// Creating a new ADO pipelines client.
+	adoClient := adopipelines.NewClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+
+	var opts []adopipelines.RunPipelineArgsOptions
+	// If running in preview mode, add a preview run option to the ADO pipeline run arguments.
+	if o.adoPreviewRun {
+		fmt.Println("Running in preview mode.")
+		// Adding a path to the yaml file with the ADO pipeline definition for parsing it in a preview run.
+		opts = append(opts, adopipelines.PipelinePreviewRun(o.adoPreviewRunYamlPath))
+	}
+
+	fmt.Println("Preparing ADO pipeline run arguments.")
+	// Composing ADO pipeline run arguments.
+	runPipelineArgs, err := adopipelines.NewRunPipelineArgs(templateParameters, o.AdoConfig.GetADOConfig(), opts...)
+	if err != nil {
+		return fmt.Errorf("build in ADO failed, failed creating ADO pipeline run args, err: %s", err)
+	}
 
 	fmt.Println("Triggering ADO build pipeline")
 	ctx := context.Background()
-	pipelineRun, err := adopipelines.Run(ctx, adoClient, templateParameters, o.AdoConfig.GetADOConfig())
+	// Triggering ADO build pipeline.
+	pipelineRun, err := adoClient.RunPipeline(ctx, runPipelineArgs)
 	if err != nil {
 		return fmt.Errorf("build in ADO failed, failed running ADO pipeline, err: %s", err)
 	}
 
+	// If running in preview mode, print the final yaml of ADO pipeline run for provided ADO pipeline definition and return.
+	if o.adoPreviewRun {
+		if pipelineRun.FinalYaml != nil {
+			fmt.Printf("ADO pipeline preview run final yaml\n: %s", *pipelineRun.FinalYaml)
+		} else {
+			fmt.Println("ADO pipeline preview run final yaml is empty")
+		}
+		return nil
+	}
+
+	// Fetch the ADO pipeline run result.
+	// GetRunResult function waits for the pipeline runs to finish and returns the result.
+	// TODO(dekiel) make the timeout configurable instead of hardcoding it.
 	pipelineRunResult, err := adopipelines.GetRunResult(ctx, adoClient, o.AdoConfig.GetADOConfig(), pipelineRun.Id, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("build in ADO failed, failed getting ADO pipeline run result, err: %s", err)
 	}
-	fmt.Printf("ADO pipeline run finished with status: %s", *pipelineRunResult)
+	fmt.Printf("ADO pipeline run finished with status: %s\n", *pipelineRunResult)
 
+	// Fetch the ADO pipeline run logs.
 	fmt.Println("Getting ADO pipeline run logs.")
-	adoBuildClient, err := adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, adoPAT)
+	// Creating a new ADO build client.
+	adoBuildClient, err := adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
 	if err != nil {
 		fmt.Printf("Can't read ADO pipeline run logs, failed creating ADO build client, err: %s", err)
 	}
-	logs, err := adopipelines.GetRunLogs(ctx, adoBuildClient, &http.Client{}, o.AdoConfig.GetADOConfig(), pipelineRun.Id, adoPAT)
+	logs, err := adopipelines.GetRunLogs(ctx, adoBuildClient, &http.Client{}, o.AdoConfig.GetADOConfig(), pipelineRun.Id, o.azureAccessToken)
 	if err != nil {
 		fmt.Printf("Failed read ADO pipeline run logs, err: %s", err)
 	} else {
 		fmt.Printf("ADO pipeline image build logs:\n%s", logs)
 	}
 
+	// if run in github actions, set output parameters
+	if o.ciSystem == GithubActions {
+		actions.SetOutput("adoResult", string(*pipelineRunResult))
+	}
+
+	// Handle the ADO pipeline run failure.
 	if *pipelineRunResult == pipelines.RunResultValues.Failed || *pipelineRunResult == pipelines.RunResultValues.Unknown {
 		return fmt.Errorf("build in ADO finished with status: %s", *pipelineRunResult)
 	}
 	return nil
 }
 
+// buildLocally is a function that builds an image locally using either Kaniko or BuildKit.
+// It takes an options struct as an argument and returns an error.
+// The function determines the build tool to use based on the USE_BUILDKIT environment variable.
+// If USE_BUILDKIT is set to "true", BuildKit is used, otherwise Kaniko is used.
+// The function fetches various environment variables such as JOB_TYPE, PULL_NUMBER, and PULL_BASE_SHA.
+// It validates these variables are present and sets them in the appropriate variables.
+// It also sets other variables from the options struct such as context, envFile, name, dockerfile, variant, and tags.
+// The function validates the options and returns an error if any of the required options are not set or are invalid.
+// The function triggers the build process and waits for it to finish.
+// It fetches the build logs and prints them.
+// If the build fails, the function returns an error.
+// If the build is successful, the function returns nil.
 func buildLocally(o options) error {
+	// Determine the build tool to use based on the USE_BUILDKIT environment variable.
 	runFunc := runInKaniko
 	if os.Getenv("USE_BUILDKIT") == "true" {
 		runFunc = runInBuildKit
@@ -299,16 +370,13 @@ func buildLocally(o options) error {
 	var variant Variants
 	var envs map[string]string
 
-	context, err := filepath.Abs(o.context)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
 	// TODO(dekiel): validating if envFile or variants.yaml file exists should be done in validateOptions or in a separate function.
 	// 		We should call this function before calling image building functions.
-	dockerfilePath := filepath.Join(context, filepath.Dir(o.dockerfile))
-
+	dockerfilePath, err := getDockerfileDirPath(o)
+	if err != nil {
+		return fmt.Errorf("get dockerfile path failed, error: %w", err)
+	}
+	// Load environment variables from the envFile or variants.yaml file.
 	if len(o.envFile) > 0 {
 		envs, err = loadEnv(os.DirFS(dockerfilePath), o.envFile)
 		if err != nil {
@@ -350,6 +418,7 @@ func buildLocally(o options) error {
 		return fmt.Errorf("'sha' could not be determined")
 	}
 
+	// Get the tags for the image.
 	parsedTags, err := getTags(pr, sha, append(o.tags, o.TagTemplate))
 	if err != nil {
 		return err
@@ -377,6 +446,7 @@ func buildLocally(o options) error {
 		return fmt.Errorf("build encountered error: %w", err)
 	}
 
+	// Sign the images.
 	err = signImages(&o, destinations)
 	if err != nil {
 		return fmt.Errorf("sign encountered error: %w", err)
@@ -387,12 +457,17 @@ func buildLocally(o options) error {
 
 // appendMissing appends key, values pairs from source array to target map
 func appendMissing(target *map[string]string, source []tags.Tag) {
-	if len(source) > 0 {
-		for _, arg := range source {
-			if _, exists := (*target)[arg.Name]; !exists {
-				(*target)[arg.Name] = arg.Value
-			}
+	for _, arg := range source {
+		if _, exists := (*target)[arg.Name]; !exists {
+			(*target)[arg.Name] = arg.Value
 		}
+	}
+}
+
+// appendToTags appends key-value pairs from source map to target slice and returns the result
+func appendToTags(target *[]tags.Tag, source map[string]string) {
+	for key, value := range source {
+		*target = append(*target, tags.Tag{Name: key, Value: value})
 	}
 }
 
@@ -564,12 +639,20 @@ func validateOptions(o options) error {
 		errs = append(errs, fmt.Errorf("flag '--sign-only' is missing or has false value, please set it to true when using '--images-to-sign' flag"))
 	}
 
-	if o.envFile != "" && o.buildInADO {
-		errs = append(errs, fmt.Errorf("envFile flag is not supported when running in ADO"))
-	}
-
 	if o.variant != "" && o.buildInADO {
 		errs = append(errs, fmt.Errorf("variant flag is not supported when running in ADO"))
+	}
+
+	if o.adoPreviewRun && !o.buildInADO {
+		errs = append(errs, fmt.Errorf("ado-preview-run flag is not supported when running locally"))
+	}
+
+	if o.adoPreviewRun && o.adoPreviewRunYamlPath == "" {
+		errs = append(errs, fmt.Errorf("ado-preview-run-yaml-path flag is missing, please provide path to yaml file with ADO pipeline definition"))
+	}
+
+	if o.adoPreviewRunYamlPath != "" && !o.adoPreviewRun {
+		errs = append(errs, fmt.Errorf("ado-preview-run-yaml-path flag is provided, but adoPreviewRun flag is not set to true"))
 	}
 
 	return errutil.NewAggregate(errs)
@@ -643,7 +726,12 @@ func (o *options) gatherOptions(flagSet *flag.FlagSet) *flag.FlagSet {
 	flagSet.BoolVar(&o.signOnly, "sign-only", false, "Only sign the image, do not build it")
 	flagSet.Var(&o.imagesToSign, "images-to-sign", "Comma-separated list of images to sign. Only used when sign-only flag is set")
 	flagSet.BoolVar(&o.buildInADO, "build-in-ado", false, "Build in Azure DevOps pipeline environment")
+	flagSet.BoolVar(&o.adoPreviewRun, "ado-preview-run", false, "Trigger ADO pipeline in preview mode")
+	flagSet.StringVar(&o.adoPreviewRunYamlPath, "ado-preview-run-yaml-path", "", "Path to yaml file with ADO pipeline definition to be used in preview mode")
 	flagSet.BoolVar(&o.parseTagsOnly, "parse-tags-only", false, "Only parse tags and print them to stdout")
+	flagSet.BoolVar(&o.testKanikoBuildConfig, "test-kaniko-build-config", false, "Verify kaniko build config for build in ADO")
+	flagSet.StringVar(&o.oidcToken, "oidc-token", "", "Token used to authenticate against Azure DevOps backend service")
+	flagSet.StringVar(&o.azureAccessToken, "azure-access-token", "", "Token used to authenticate against Azure DevOps API")
 
 	return flagSet
 }
@@ -655,6 +743,19 @@ func main() {
 	if err := flagSet.Parse(os.Args[1:]); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
+	}
+
+	// If running inside some CI system, determine which system is used
+	if o.isCI {
+		ciSystem, err := DetermineUsedCISystem()
+		if err != nil {
+			log.Fatalf("Failed to determine current ci system: %s", err)
+		}
+		o.ciSystem = ciSystem
+		o.gitState, err = LoadGitStateConfig(ciSystem)
+		if err != nil {
+			log.Fatalf("Failed to load current git state: %s", err)
+		}
 	}
 
 	// validate if options provided by flags and config file are fine
@@ -683,52 +784,79 @@ func main() {
 		os.Exit(0)
 	}
 
-	// TODO(dekiel): refactor this function to move all logic to separate function and make it testable.
 	if o.parseTagsOnly {
-		var sha, pr string
-		if o.isCI {
-			presubmit := os.Getenv("JOB_TYPE") == "presubmit"
-			if presubmit {
-				if n := os.Getenv("PULL_NUMBER"); n != "" {
-					pr = n
-				}
-			}
-
-			if c := os.Getenv("PULL_BASE_SHA"); c != "" {
-				sha = c
-			}
-		}
-
-		// if sha is still not set, fail the pipeline
-		if sha == "" {
-			fmt.Println("'sha' could not be determined")
-			os.Exit(1)
-		}
-		parsedTags, err := getTags(pr, sha, append(o.tags, o.TagTemplate))
+		dockerfilePath, err := getDockerfileDirPath(o)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
+		// Load environment variables from the envFile.
+		var envs map[string]string
+		if len(o.envFile) > 0 {
+			envs, err = loadEnv(os.DirFS(dockerfilePath), o.envFile)
+			if err != nil {
+				fmt.Println(err)
+				os.Exit(1)
+			}
+		}
+
+		parsedTags, err := parseTags(o)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		appendToTags(&parsedTags, envs)
 		// Print parsed tags to stdout as json
 		jsonTags, err := json.Marshal(parsedTags)
 		if err != nil {
 			fmt.Println(err)
 			os.Exit(1)
 		}
-		fmt.Printf("%s", jsonTags)
+		fmt.Printf("%s\n", jsonTags)
 		os.Exit(0)
 	}
 	if o.buildInADO {
 		err = buildInADO(o)
 		if err != nil {
-			fmt.Printf("Image build failed with error: %s", err)
+			fmt.Printf("Image build failed with error: %s\n", err)
 			os.Exit(1)
 		}
+		os.Exit(0)
 	}
+
 	err = buildLocally(o)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 	fmt.Println("Job's done.")
+}
+
+func parseTags(o options) ([]tags.Tag, error) {
+	var pr string
+	sha := o.gitState.BaseCommitSHA
+	if o.gitState.isPullRequest {
+		pr = fmt.Sprint(o.gitState.PullRequestNumber)
+	}
+
+	if sha == "" {
+		return nil, fmt.Errorf("sha still empty")
+	}
+	parsedTags, err := getTags(pr, sha, append(o.tags, o.TagTemplate))
+	if err != nil {
+		return nil, err
+	}
+
+	return parsedTags, nil
+}
+
+func getDockerfileDirPath(o options) (string, error) {
+	// Get the absolute path to the build context directory.
+	context, err := filepath.Abs(o.context)
+	if err != nil {
+		return "", fmt.Errorf("could not get absolute path to build context directory: %w", err)
+	}
+	// Get the absolute path to the dockerfile.
+	dockerfileDirPath := filepath.Join(context, filepath.Dir(o.dockerfile))
+	return dockerfileDirPath, err
 }

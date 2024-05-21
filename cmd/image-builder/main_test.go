@@ -165,7 +165,7 @@ func Test_validateOptions(t *testing.T) {
 		},
 		{
 			name:      "envFile with buildInADO",
-			expectErr: true,
+			expectErr: false,
 			opts: options{
 				context:    "directory/",
 				name:       "test-image",
@@ -559,6 +559,65 @@ func Test_appendMissing(t *testing.T) {
 	}
 }
 
+func Test_parseTags(t *testing.T) {
+	tc := []struct {
+		name      string
+		options   options
+		tags      []tags.Tag
+		expectErr bool
+	}{
+		{
+			name: "PR tag parse",
+			options: options{
+				gitState: GitStateConfig{
+					BaseCommitSHA:     "some-sha",
+					PullRequestNumber: 5,
+					isPullRequest:     true,
+				},
+				tags: sets.Tags{
+					{Name: "AnotherTest", Value: `{{ .CommitSHA }}`},
+				},
+			},
+			tags: []tags.Tag{{Name: "default_tag", Value: "PR-5"}},
+		},
+		{
+			name: "Tags from commit sha",
+			options: options{
+				gitState: GitStateConfig{
+					BaseCommitSHA: "some-sha",
+				},
+				Config: Config{
+					TagTemplate: tags.Tag{Name: "AnotherTest", Value: `{{ .CommitSHA }}`},
+				},
+			},
+			tags: []tags.Tag{{Name: "AnotherTest", Value: "some-sha"}},
+		},
+		{
+			name: "empty commit sha",
+			options: options{
+				gitState: GitStateConfig{},
+			},
+			expectErr: true,
+		},
+	}
+
+	for _, c := range tc {
+		t.Run(c.name, func(t *testing.T) {
+			tags, err := parseTags(c.options)
+			if err != nil && !c.expectErr {
+				t.Errorf("Got unexpected error: %s", err)
+			}
+			if err == nil && c.expectErr {
+				t.Error("Expected error, but no one occured")
+			}
+
+			if !reflect.DeepEqual(tags, c.tags) {
+				t.Errorf("Got %v, but expected %v", tags, c.tags)
+			}
+		})
+	}
+}
+
 type mockSigner struct {
 	signFunc func([]string) error
 }
@@ -566,3 +625,62 @@ type mockSigner struct {
 func (m *mockSigner) Sign(images []string) error {
 	return m.signFunc(images)
 }
+
+// TODO: add tests for functions related to execution in ado.
+// 		Test copied from pkg/azuredevops/pipelines/pipelines_test.go, rewrite to run it here.
+// Describe("Run", func() {
+// 	var (
+// 		templateParams  map[string]string
+// 		runPipelineArgs adoPipelines.RunPipelineArgs
+// 	)
+//
+// 	BeforeEach(func() {
+// 		templateParams = map[string]string{"param1": "value1", "param2": "value2"}
+// 		runPipelineArgs = adoPipelines.RunPipelineArgs{
+// 			Project:    &adoConfig.ADOProjectName,
+// 			PipelineId: &adoConfig.ADOPipelineID,
+// 			RunParameters: &adoPipelines.RunPipelineParameters{
+// 				PreviewRun:         ptr.To(false),
+// 				TemplateParameters: &templateParams,
+// 			},
+// 			PipelineVersion: &adoConfig.ADOPipelineVersion,
+// 		}
+// 	})
+//
+// 	It("should run the pipeline", func() {
+// 		mockRun := &adoPipelines.Run{Id: ptr.To(123)}
+// 		mockADOClient.On("RunPipeline", ctx, runPipelineArgs).Return(mockRun, nil)
+//
+// 		run, err := pipelines.Run(ctx, mockADOClient, templateParams, adoConfig)
+// 		Expect(err).ToNot(HaveOccurred())
+// 		Expect(run.Id).To(Equal(ptr.To(123)))
+// 		mockADOClient.AssertCalled(t, "RunPipeline", ctx, runPipelineArgs)
+// 		mockADOClient.AssertNumberOfCalls(t, "RunPipeline", 1)
+// 		mockADOClient.AssertExpectations(GinkgoT())
+// 	})
+//
+// 	It("should handle ADO client error", func() {
+// 		mockADOClient.On("RunPipeline", ctx, runPipelineArgs).Return(nil, fmt.Errorf("ADO client error"))
+//
+// 		_, err := pipelines.Run(ctx, mockADOClient, templateParams, adoConfig)
+// 		Expect(err).To(HaveOccurred())
+// 		mockADOClient.AssertCalled(t, "RunPipeline", ctx, runPipelineArgs)
+// 		mockADOClient.AssertNumberOfCalls(t, "RunPipeline", 1)
+// 		mockADOClient.AssertExpectations(GinkgoT())
+// 	})
+//
+// 	It("should run the pipeline in preview mode", func() {
+// 		finalYaml := "pipeline:\n  stages:\n  - stage: Build\n    jobs:\n    - job: Build\n      steps:\n      - script: echo Hello, world!\n        displayName: 'Run a one-line script'"
+// 		runPipelineArgs.RunParameters.PreviewRun = ptr.To(true)
+// 		mockRun := &adoPipelines.Run{Id: ptr.To(123), FinalYaml: &finalYaml}
+// 		mockADOClient.On("RunPipeline", ctx, runPipelineArgs).Return(mockRun, nil)
+//
+// 		run, err := pipelines.Run(ctx, mockADOClient, templateParams, adoConfig, pipelines.PipelinePreviewRun)
+// 		Expect(err).ToNot(HaveOccurred())
+// 		Expect(run.Id).To(Equal(ptr.To(123)))
+// 		Expect(run.FinalYaml).To(Equal(&finalYaml))
+// 		mockADOClient.AssertCalled(t, "RunPipeline", ctx, runPipelineArgs)
+// 		mockADOClient.AssertNumberOfCalls(t, "RunPipeline", 1)
+// 		mockADOClient.AssertExpectations(GinkgoT())
+// 	})
+// })

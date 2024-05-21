@@ -1,4 +1,4 @@
-FROM golang:1.21.4-alpine as base
+FROM golang:1.22.3-alpine as base
 
 
 RUN set -eux; \
@@ -10,11 +10,11 @@ RUN set -eux; \
     bash \
     jq \
     yq \
+    iptables-legacy \
     docker \
     btrfs-progs \
     e2fsprogs \
     e2fsprogs-extra \
-    iptables \
     xfsprogs \
     xz \
     git \
@@ -30,7 +30,14 @@ RUN set -eux; \
     addgroup -S dockremap 	&& \
     adduser -SDHs /sbin/nologin dockremap; \
     echo 'dockremap:165536:65536' >> /etc/subuid && \
-    echo 'dockremap:165536:65536' >> /etc/subgid
+    echo 'dockremap:165536:65536' >> /etc/subgid && \
+    # symlink legacy iptables for dind compatibility
+    ln -sf /sbin/iptables-legacy /sbin/iptables ; \
+    ln -sf /sbin/iptables-legacy-save /sbin/iptables-save ; \
+    ln -sf /sbin/iptables-legacy-restore /sbin/iptables-restore ; \
+    ln -sf /sbin/ip6tables-legacy /sbin/ip6tables ; \
+    ln -sf /sbin/ip6tables-legacy-save /sbin/ip6tables-save ; \
+    ln -sf /sbin/ip6tables-legacy-restore /sbin/ip6tables-restore
 
 RUN mkdir -p /workspace; \
     chmod 1777 /workspace
@@ -54,7 +61,7 @@ RUN curl -Lo helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-$(go en
     tar -xzOf helm.tar.gz "linux-$(go env GOARCH)/helm" > /usr/local/bin/helm && \
     chmod +x /usr/local/bin/helm
 
-ARG CLUSTER_VERSION=v1.27.5
+ARG CLUSTER_VERSION=v1.28.6
 RUN curl -Lo /usr/local/bin/kubectl "https://storage.googleapis.com/kubernetes-release/release/${CLUSTER_VERSION}/bin/linux/$(go env GOARCH)/kubectl" && \
     chmod +x /usr/local/bin/kubectl
 
