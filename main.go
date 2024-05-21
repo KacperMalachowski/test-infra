@@ -17,7 +17,7 @@ type configs struct {
 }
 
 func main() {
-	testInfraPath := os.Args[0]
+	testInfraPath := os.Args[1]
 
 	if !strings.HasSuffix(testInfraPath, "/") {
 		testInfraPath = fmt.Sprintf("%s/", testInfraPath)
