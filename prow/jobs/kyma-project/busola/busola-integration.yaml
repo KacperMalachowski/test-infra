@@ -21,7 +21,7 @@ presubmits: # runs on PRs
         - ^ui5$
       spec:
         containers:
-          - image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-nodejs:v20240516-d002e6ca
+          - image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-nodejs:v20240520-85a288ea
             securityContext:
               privileged: true
               seccompProfile:
@@ -36,10 +36,10 @@ presubmits: # runs on PRs
                 value: "cluster"
             resources:
               requests:
-                memory: 6Gi
+                memory: 8Gi
                 cpu: 2
               limits:
-                memory: 8Gi
+                memory: 10Gi
                 cpu: 4
     - name: pull-busola-integration-namespace-k3d
       annotations:
@@ -62,7 +62,7 @@ presubmits: # runs on PRs
         - ^ui5$
       spec:
         containers:
-          - image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-nodejs:v20240516-d002e6ca
+          - image: europe-docker.pkg.dev/kyma-project/prod/testimages/e2e-dind-nodejs:v20240520-85a288ea
             securityContext:
               privileged: true
               seccompProfile:
@@ -77,8 +77,8 @@ presubmits: # runs on PRs
                 value: "namespace"
             resources:
               requests:
-                memory: 6Gi
+                memory: 8Gi
                 cpu: 2
               limits:
-                memory: 8Gi
+                memory: 10Gi
                 cpu: 4
