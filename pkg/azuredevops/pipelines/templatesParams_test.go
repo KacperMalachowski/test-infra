@@ -1,6 +1,8 @@
 package pipelines_test
 
 import (
+	"encoding/base64"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -32,6 +34,11 @@ var _ = Describe("Test OCIImageBuilderTemplateParams", func() {
 	It("sets the correct JobType to postsubmit", func() {
 		params.SetPostsubmitJobType()
 		Expect(params["JobType"]).To(Equal("postsubmit"))
+	})
+
+	It("sets the correct JobType to workflow_dispatch", func() {
+		params.SetWorkflowDispatchJobType()
+		Expect(params["JobType"]).To(Equal("workflow_dispatch"))
 	})
 
 	It("sets the correct PullNumber", func() {
@@ -76,7 +83,8 @@ var _ = Describe("Test OCIImageBuilderTemplateParams", func() {
 
 	It("sets the correct ImageTags", func() {
 		params.SetImageTags("tag1 tag2")
-		Expect(params["Tags"]).To(Equal("tag1 tag2"))
+		expected := base64.StdEncoding.EncodeToString([]byte("tag1 tag2"))
+		Expect(params["Tags"]).To(Equal(expected))
 	})
 
 	It("sets the correct UseKanikoConfigFromPR", func() {
@@ -94,7 +102,8 @@ var _ = Describe("Test OCIImageBuilderTemplateParams", func() {
 		params.SetRepoName("testName")
 		params.SetRepoOwner("testOwner")
 		params.SetPresubmitJobType()
-		params.SetBaseSHA("abc")
+		params.SetBaseSHA("abc123")
+		params.SetBaseRef("main")
 		params.SetImageName("my-image")
 		params.SetDockerfilePath("/path/to/dockerfile")
 		params.SetBuildContext("/path/to/context")
@@ -108,7 +117,7 @@ var _ = Describe("Test OCIImageBuilderTemplateParams", func() {
 		Expect(err).NotTo(BeNil())
 	})
 
-	It("returns error if JobType is not presubmit or postsubmit", func() {
+	It("returns error if JobType is not presubmit or postsubmit or workflow_dispatch", func() {
 		params["JobType"] = "otherType"
 
 		err := params.Validate()

@@ -1,3 +1,5 @@
+# See documentation at https://github.com/kyma-project/test-infra/blob/main/cmd/image-builder/github-workflow-integration.md
+
 name: image-builder
 
 on:
@@ -41,10 +43,10 @@ on:
     outputs:
       images:
         description: JSON list of images built by image-builder
-        value: ${{ jobs.build.outputs.images }}
+        value: ${{ jobs.build-image.outputs.images }}
       adoResult:
         description: The result of the ADO pipeline execution
-        value: ${{ jobs.build.outputs.result }}
+        value: ${{ jobs.build-image.outputs.result }}
 
 jobs:
   build-image:
@@ -107,6 +109,3 @@ jobs:
           dockerfile: ${{ inputs.dockerfile }}
           env-file: ${{ inputs.env-file }}
           config: "./configs/kaniko-build-config.yaml"
-      
-      - name: Show outputs
-        run: echo ${{ toJson(steps.build.outputs) }} # TODO(kacpermalachowski): Remove after implementation of output handling

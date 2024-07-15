@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -17,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	adopipelines "github.com/kyma-project/test-infra/pkg/azuredevops/pipelines"
 	"github.com/kyma-project/test-infra/pkg/extractimageurls"
@@ -43,6 +43,7 @@ type options struct {
 	silent     bool
 	isCI       bool
 	tags       sets.Tags
+	tagsBase64 string
 	buildArgs  sets.Tags
 	platforms  sets.Strings
 	exportTags bool
@@ -58,6 +59,8 @@ type options struct {
 	azureAccessToken      string
 	ciSystem              CISystem
 	gitState              GitStateConfig
+	debug                 bool
+	dryRun                bool
 }
 
 // parseVariable returns a build-arg.
@@ -198,6 +201,8 @@ func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilder
 		templateParameters.SetPresubmitJobType()
 	} else if options.gitState.JobType == "postsubmit" {
 		templateParameters.SetPostsubmitJobType()
+	} else if options.gitState.JobType == "workflow_dispatch" {
+		templateParameters.SetWorkflowDispatchJobType()
 	}
 
 	if options.gitState.IsPullRequest() {
@@ -205,6 +210,10 @@ func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilder
 	}
 
 	templateParameters.SetBaseSHA(options.gitState.BaseCommitSHA)
+
+	if len(options.gitState.BaseCommitRef) > 0 {
+		templateParameters.SetBaseRef(options.gitState.BaseCommitRef)
+	}
 
 	if options.gitState.IsPullRequest() {
 		templateParameters.SetPullSHA(options.gitState.PullHeadCommitSHA)
@@ -261,13 +270,16 @@ func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilder
 // TODO(dekiel): refactor this function to accept clients as parameters to make it testable with mocks.
 func buildInADO(o options) error {
 	fmt.Println("Building image in ADO pipeline.")
+
 	// Getting Azure DevOps Personal Access Token (ADO_PAT) from environment variable for authentication with ADO API when it's not set via flag.
-	if o.azureAccessToken == "" {
+	if o.azureAccessToken == "" && !o.dryRun {
 		adoPAT, present := os.LookupEnv("ADO_PAT")
 		if !present {
 			return fmt.Errorf("build in ADO failed, ADO_PAT environment variable is not set, please set it to valid ADO PAT")
 		}
 		o.azureAccessToken = adoPAT
+	} else if o.dryRun {
+		fmt.Println("Running in dry-run mode. Skipping getting ADO PAT.")
 	}
 
 	fmt.Println("Preparing ADO template parameters.")
@@ -297,56 +309,83 @@ func buildInADO(o options) error {
 	}
 
 	fmt.Println("Triggering ADO build pipeline")
-	ctx := context.Background()
-	// Triggering ADO build pipeline.
-	pipelineRun, err := adoClient.RunPipeline(ctx, runPipelineArgs)
-	if err != nil {
-		return fmt.Errorf("build in ADO failed, failed running ADO pipeline, err: %s", err)
-	}
-
-	// If running in preview mode, print the final yaml of ADO pipeline run for provided ADO pipeline definition and return.
-	if o.adoPreviewRun {
-		if pipelineRun.FinalYaml != nil {
-			fmt.Printf("ADO pipeline preview run final yaml\n: %s", *pipelineRun.FinalYaml)
-		} else {
-			fmt.Println("ADO pipeline preview run final yaml is empty")
+	var (
+		pipelineRunResult *pipelines.RunResult
+		logs              string
+	)
+	if !o.dryRun {
+		ctx := context.Background()
+		// Triggering ADO build pipeline.
+		pipelineRun, err := adoClient.RunPipeline(ctx, runPipelineArgs)
+		if err != nil {
+			return fmt.Errorf("build in ADO failed, failed running ADO pipeline, err: %s", err)
 		}
-		return nil
-	}
 
-	// Fetch the ADO pipeline run result.
-	// GetRunResult function waits for the pipeline runs to finish and returns the result.
-	// TODO(dekiel) make the timeout configurable instead of hardcoding it.
-	pipelineRunResult, err := adopipelines.GetRunResult(ctx, adoClient, o.AdoConfig.GetADOConfig(), pipelineRun.Id, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("build in ADO failed, failed getting ADO pipeline run result, err: %s", err)
-	}
-	fmt.Printf("ADO pipeline run finished with status: %s\n", *pipelineRunResult)
+		// If running in preview mode, print the final yaml of ADO pipeline run for provided ADO pipeline definition and return.
+		if o.adoPreviewRun {
+			if pipelineRun.FinalYaml != nil {
+				fmt.Printf("ADO pipeline preview run final yaml\n: %s", *pipelineRun.FinalYaml)
+			} else {
+				fmt.Println("ADO pipeline preview run final yaml is empty")
+			}
+			return nil
+		}
 
-	// Fetch the ADO pipeline run logs.
-	fmt.Println("Getting ADO pipeline run logs.")
-	// Creating a new ADO build client.
-	adoBuildClient, err := adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
-	if err != nil {
-		fmt.Printf("Can't read ADO pipeline run logs, failed creating ADO build client, err: %s", err)
-	}
-	logs, err := adopipelines.GetRunLogs(ctx, adoBuildClient, &http.Client{}, o.AdoConfig.GetADOConfig(), pipelineRun.Id, o.azureAccessToken)
-	if err != nil {
-		fmt.Printf("Failed read ADO pipeline run logs, err: %s", err)
+		// Fetch the ADO pipeline run result.
+		// GetRunResult function waits for the pipeline runs to finish and returns the result.
+		// TODO(dekiel) make the timeout configurable instead of hardcoding it.
+		pipelineRunResult, err = adopipelines.GetRunResult(ctx, adoClient, o.AdoConfig.GetADOConfig(), pipelineRun.Id)
+		if err != nil {
+			return fmt.Errorf("build in ADO failed, failed getting ADO pipeline run result, err: %s", err)
+		}
+		fmt.Printf("ADO pipeline run finished with status: %s\n", *pipelineRunResult)
+
+		// Fetch the ADO pipeline run logs.
+		fmt.Println("Getting ADO pipeline run logs.")
+		// Creating a new ADO build client.
+		adoBuildClient, err := adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+		if err != nil {
+			fmt.Printf("Can't read ADO pipeline run logs, failed creating ADO build client, err: %s", err)
+		}
+		logs, err = adopipelines.GetRunLogs(ctx, adoBuildClient, &http.Client{}, o.AdoConfig.GetADOConfig(), pipelineRun.Id, o.azureAccessToken)
+		if err != nil {
+			fmt.Printf("Failed read ADO pipeline run logs, err: %s", err)
+		} else {
+			fmt.Printf("ADO pipeline image build logs:\n%s", logs)
+		}
 	} else {
-		fmt.Printf("ADO pipeline image build logs:\n%s", logs)
+		dryRunPipelineRunResult := pipelines.RunResult("Succeeded")
+		pipelineRunResult = &dryRunPipelineRunResult
 	}
 
+	// TODO: Setting github outputs should happen outside buildInADO function.
+	//  buildInADO should return required data and caller should handle it.
 	// if run in github actions, set output parameters
 	if o.ciSystem == GithubActions {
-		images := extractImagesFromADOLogs(logs)
+		fmt.Println("Setting GitHub outputs.")
+		var images []string
+		if !o.dryRun {
+			images = extractImagesFromADOLogs(logs)
+			fmt.Printf("Extracted built images from ADO logs: %v\n", images)
+		} else {
+			fmt.Println("Running in dry-run mode. Skipping extracting images and results from ADO.")
+			images = []string{"registry/repo/image1:tag1", "registry/repo/image2:tag2"}
+		}
 		data, err := json.Marshal(images)
 		if err != nil {
 			return fmt.Errorf("cannot marshal list of images: %w", err)
 		}
 
-		actions.SetOutput("images", string(data))
-		actions.SetOutput("adoResult", string(*pipelineRunResult))
+		err = actions.SetOutput("images", string(data))
+		if err != nil {
+			return fmt.Errorf("cannot set images GitHub output: %w", err)
+		}
+		fmt.Println("images GitHub output set")
+		err = actions.SetOutput("adoResult", string(*pipelineRunResult))
+		if err != nil {
+			return fmt.Errorf("cannot set adoResult GitHub output: %w", err)
+		}
+		fmt.Println("adoResult GitHub output set")
 	}
 
 	// Handle the ADO pipeline run failure.
@@ -473,7 +512,8 @@ func appendMissing(target *map[string]string, source []tags.Tag) {
 	}
 }
 
-// appendToTags appends key-value pairs from source map to target slice and returns the result
+// appendToTags appends key-value pairs from source map to target slice of tags.Tag
+// This allows creation of image tags from key value pairs.
 func appendToTags(target *[]tags.Tag, source map[string]string) {
 	for key, value := range source {
 		*target = append(*target, tags.Tag{Name: key, Value: value})
@@ -667,36 +707,39 @@ func validateOptions(o options) error {
 	return errutil.NewAggregate(errs)
 }
 
-// loadEnv loads environment variables into application runtime from key=value list
+// loadEnv creates environment variables in application runtime from a file with key=value data
 func loadEnv(vfs fs.FS, envFile string) (map[string]string, error) {
 	if len(envFile) == 0 {
 		// file is empty - ignore
 		return nil, nil
 	}
-	f, err := vfs.Open(envFile)
+	file, err := vfs.Open(envFile)
 	if err != nil {
 		return nil, fmt.Errorf("open env file: %w", err)
 	}
-	s := bufio.NewScanner(f)
+	fileReader := bufio.NewScanner(file)
 	vars := make(map[string]string)
-	for s.Scan() {
-		kv := s.Text()
-		sp := strings.SplitN(kv, "=", 2)
-		key, val := sp[0], sp[1]
-		if len(sp) > 2 {
-			return nil, fmt.Errorf("env var split incorrectly: 2 != %v", len(sp))
+	for fileReader.Scan() {
+		line := fileReader.Text()
+		separatedValues := strings.SplitN(line, "=", 2)
+		if len(separatedValues) > 2 {
+			return nil, fmt.Errorf("env var split incorrectly, got more than two values, expected only two, values: %v", separatedValues)
 		}
-		if _, ok := os.LookupEnv(key); ok {
-			// do not override env variable if it's already present in the runtime
-			// do not include in vars map since dev should not have access to it anyway
-			continue
+		// ignore empty lines, setup environment variable only if key and value are present
+		if len(separatedValues) == 2 {
+			key, val := separatedValues[0], separatedValues[1]
+			if _, ok := os.LookupEnv(key); ok {
+				// do not override env variable if it's already present in the runtime
+				// do not include in vars map since dev should not have access to it anyway
+				continue
+			}
+			err := os.Setenv(key, val)
+			if err != nil {
+				return nil, fmt.Errorf("setenv: %w", err)
+			}
+			// add value to the vars that will be injected as build args
+			vars[key] = val
 		}
-		err := os.Setenv(key, val)
-		if err != nil {
-			return nil, fmt.Errorf("setenv: %w", err)
-		}
-		// add value to the vars that will be injected as build args
-		vars[key] = val
 	}
 	return vars, nil
 }
@@ -726,9 +769,12 @@ func (o *options) gatherOptions(flagSet *flag.FlagSet) *flag.FlagSet {
 	flagSet.StringVar(&o.dockerfile, "dockerfile", "dockerfile", "Path to dockerfile file relative to context")
 	flagSet.StringVar(&o.variant, "variant", "", "If variants.yaml file is present, define which variant should be built. If variants.yaml is not present, this flag will be ignored")
 	flagSet.StringVar(&o.logDir, "log-dir", "/logs/artifacts", "Path to logs directory where GCB logs will be stored")
+	flagSet.BoolVar(&o.debug, "debug", false, "Enable debug logging")
+	flagSet.BoolVar(&o.dryRun, "dry-run", false, "Do not build the image, only print a ADO API call pipeline parameters")
 	// TODO: What is expected value repo only or org/repo? How this flag influence an image builder behaviour?
 	flagSet.StringVar(&o.orgRepo, "repo", "", "Load repository-specific configuration, for example, signing configuration")
 	flagSet.Var(&o.tags, "tag", "Additional tag that the image will be tagged with. Optionally you can pass the name in the format name=value which will be used by export-tags")
+	flagSet.StringVar(&o.tagsBase64, "tag-base64", "", "String representation of all tags encoded by base64. String representation must be in format as output of kyma-project/test-infra/pkg/tags.Tags.String() method")
 	flagSet.Var(&o.buildArgs, "build-arg", "Flag to pass additional arguments to build dockerfile. It can be used in the name=value format.")
 	flagSet.Var(&o.platforms, "platform", "Only supported with BuildKit. Platform of the image that is built")
 	flagSet.BoolVar(&o.exportTags, "export-tags", false, "Export parsed tags as build-args into dockerfile. Each tag will have format TAG_x, where x is the tag name passed along with the tag")
@@ -794,34 +840,11 @@ func main() {
 	}
 
 	if o.parseTagsOnly {
-		dockerfilePath, err := getDockerfileDirPath(o)
+		err = generateTags(o)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Printf("Parse tags failed with error: %s\n", err)
 			os.Exit(1)
 		}
-		// Load environment variables from the envFile.
-		var envs map[string]string
-		if len(o.envFile) > 0 {
-			envs, err = loadEnv(os.DirFS(dockerfilePath), o.envFile)
-			if err != nil {
-				fmt.Println(err)
-				os.Exit(1)
-			}
-		}
-
-		parsedTags, err := parseTags(o)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		appendToTags(&parsedTags, envs)
-		// Print parsed tags to stdout as json
-		jsonTags, err := json.Marshal(parsedTags)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-		fmt.Printf("%s\n", jsonTags)
 		os.Exit(0)
 	}
 	if o.buildInADO {
@@ -841,6 +864,50 @@ func main() {
 	fmt.Println("Job's done.")
 }
 
+func generateTags(o options) error {
+	// Get the absolute path to the dockerfile directory.
+	dockerfilePath, err := getDockerfileDirPath(o)
+	if err != nil {
+		return fmt.Errorf("failed to get dockerfile path: %s", err)
+	}
+	// Load environment variables from the envFile.
+	envs, err := getEnvs(o, dockerfilePath)
+	if err != nil {
+		return err
+	}
+	// Parse tags from the provided options.
+	parsedTags, err := parseTags(o)
+	if err != nil {
+		return fmt.Errorf("failed to parse tags : %s", err)
+	}
+	// Append environment variables to tags.
+	appendToTags(&parsedTags, envs)
+	// Print parsed tags to stdout as json.
+	jsonTags := tagsAsJSON(parsedTags)
+	fmt.Printf("%s\n", jsonTags)
+	return nil
+}
+
+func tagsAsJSON(parsedTags []tags.Tag) string {
+	jsonTags, err := json.Marshal(parsedTags)
+	if err != nil {
+		fmt.Printf("Failed to marshal tags to json: %s", err)
+		os.Exit(1)
+	}
+	return string(jsonTags)
+}
+
+func getEnvs(o options, dockerfilePath string) (map[string]string, error) {
+	if len(o.envFile) > 0 {
+		envs, err := loadEnv(os.DirFS(dockerfilePath), o.envFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load env file: %s", err)
+		}
+		return envs, nil
+	}
+	return map[string]string{}, nil
+}
+
 func parseTags(o options) ([]tags.Tag, error) {
 	var pr string
 	sha := o.gitState.BaseCommitSHA
@@ -851,6 +918,24 @@ func parseTags(o options) ([]tags.Tag, error) {
 	if sha == "" {
 		return nil, fmt.Errorf("sha still empty")
 	}
+
+	// read tags from base64 encoded string if provided
+	if o.tagsBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(o.tagsBase64)
+		if err != nil {
+			fmt.Printf("Failed to decode tags, error: %s", err)
+			os.Exit(1)
+		}
+		splitedTags := strings.Split(string(decoded), ",")
+		for _, tag := range splitedTags {
+			err = o.tags.Set(tag)
+			if err != nil {
+				fmt.Printf("Failed to set tag, tag: %s, error: %s", tag, err)
+				os.Exit(1)
+			}
+		}
+	}
+
 	parsedTags, err := getTags(pr, sha, append(o.tags, o.TagTemplate))
 	if err != nil {
 		return nil, err
@@ -878,7 +963,7 @@ func extractImagesFromADOLogs(logs string) []string {
 	matches := re.FindAllStringSubmatch(logs, -1)
 
 	images := []string{}
-	if len(matches) > 1 {
+	if len(matches) > 0 {
 		for _, match := range matches {
 			if len(match) > 1 {
 				images = append(images, match[1])

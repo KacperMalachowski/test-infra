@@ -128,8 +128,10 @@ type GitStateConfig struct {
 	JobType string
 	// Number of the pull request for presubmit job
 	PullRequestNumber int
-	// Commit SHA for base branch
+	// Commit SHA for base branch or tag
 	BaseCommitSHA string
+	// Base branch or tag
+	BaseCommitRef string
 	// Commit SHA for head of the pull request
 	PullHeadCommitSHA string
 	// isPullRequest contains information whether event which triggered the job was from pull request
@@ -171,7 +173,7 @@ func loadADOGitState() (GitStateConfig, error) {
 	if !present {
 		return GitStateConfig{}, fmt.Errorf("JOB_TYPE environment variable is not set, please set it to valid job type")
 	}
-	if !slices.Contains([]string{"presubmit", "postsubmit"}, jobType) {
+	if !slices.Contains(adoPipelines.GetValidJobTypes(), jobType) {
 		return GitStateConfig{}, fmt.Errorf("image builder is running for unsupported event %s", jobType)
 	}
 
@@ -255,6 +257,19 @@ func loadGithubActionsGitState() (GitStateConfig, error) {
 			JobType:         "postsubmit",
 			BaseCommitSHA:   *payload.HeadCommit.ID,
 		}, nil
+	case "workflow_dispatch":
+		var payload github.WorkflowDispatchEvent
+		err = json.Unmarshal(data, &payload)
+		if err != nil {
+			return GitStateConfig{}, fmt.Errorf("failed to parse event payload: %s", err)
+		}
+		return GitStateConfig{
+			RepositoryName:  *payload.Repo.Name,
+			RepositoryOwner: *payload.Repo.Owner.Login,
+			JobType:         "workflow_dispatch",
+			BaseCommitSHA:   os.Getenv("GITHUB_SHA"),
+			BaseCommitRef:   os.Getenv("GITHUB_REF"),
+		}, nil
 	default:
 		return GitStateConfig{}, fmt.Errorf("GITHUB_EVENT_NAME environment variable is set to unsupported value \"%s\", please set it to supported value", eventName)
 	}
@@ -285,7 +300,9 @@ func determineUsedCISystem(envGetter func(key string) string, envLookup func(key
 		return Prow, nil
 	}
 
-	isAdo := envGetter("CI_SYSTEM") == "AzureDevOps"
+	// BUILD_BUILDID environment variable is set in Azure DevOps pipeline
+	// See: https://learn.microsoft.com/en-us/azure/devops/pipelines/build/variables?view=azure-devops&tabs=yaml#build-variables-devops-services
+	_, isAdo := envLookup("BUILD_BUILDID")
 	if isAdo {
 		return AzureDevOps, nil
 	}

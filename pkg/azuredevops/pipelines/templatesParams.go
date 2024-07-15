@@ -3,9 +3,17 @@
 package pipelines
 
 import (
+	"encoding/base64"
 	"fmt"
+	"slices"
 	"strconv"
 )
+
+var validJobTypes = []string{"presubmit", "postsubmit", "workflow_dispatch"}
+
+func GetValidJobTypes() []string {
+	return validJobTypes
+}
 
 // ErrRequiredParamNotSet is returned when the required template parameter is not set
 type ErrRequiredParamNotSet string
@@ -41,6 +49,11 @@ func (p OCIImageBuilderTemplateParams) SetPostsubmitJobType() {
 	p["JobType"] = "postsubmit"
 }
 
+// SetWorkflowDispatchJobType sets required parameter JobType to workflow_dispatch.
+func (p OCIImageBuilderTemplateParams) SetWorkflowDispatchJobType() {
+	p["JobType"] = "workflow_dispatch"
+}
+
 // SetPullNumber sets optional parameter PullNumber.
 func (p OCIImageBuilderTemplateParams) SetPullNumber(number string) {
 	p["PullNumber"] = number
@@ -52,6 +65,11 @@ func (p OCIImageBuilderTemplateParams) SetPullNumber(number string) {
 func (p OCIImageBuilderTemplateParams) SetBaseSHA(sha string) {
 	// TODO: Rename key to BaseSHA
 	p["PullBaseSHA"] = sha
+}
+
+// SetBaseRef sets required parameter BaseRef.
+func (p OCIImageBuilderTemplateParams) SetBaseRef(ref string) {
+	p["BaseRef"] = ref
 }
 
 // SetPullSHA sets optional parameter PullSHA.
@@ -102,9 +120,11 @@ func (p OCIImageBuilderTemplateParams) SetBuildArgs(args string) {
 
 // SetImageTags sets optional parameter Tags.
 // This parameter is used to provide additional tags for the image.
+// The value is base64 encoded to avoid issues with special characters.
 func (p OCIImageBuilderTemplateParams) SetImageTags(tags string) {
 	// TODO: Rename key to ImageTags
-	p["Tags"] = tags
+	encodedTags := base64.StdEncoding.EncodeToString([]byte(tags))
+	p["Tags"] = encodedTags
 }
 
 // SetUseKanikoConfigFromPR sets optional parameter UseKanikoConfigFromPR.
@@ -136,8 +156,8 @@ func (p OCIImageBuilderTemplateParams) Validate() error {
 	if jobType, ok = p["JobType"]; !ok {
 		return ErrRequiredParamNotSet("JobType")
 	}
-	if jobType != "presubmit" && jobType != "postsubmit" {
-		return fmt.Errorf("JobType must be either presubmit or postsubmit, got: %s", jobType)
+	if !slices.Contains(validJobTypes, jobType) {
+		return fmt.Errorf("JobType must be either presubmit, postsubmit or workflow_dispatch, got: %s", jobType)
 	}
 	if _, ok = p["PullBaseSHA"]; !ok {
 		return ErrRequiredParamNotSet("BaseSHA")
