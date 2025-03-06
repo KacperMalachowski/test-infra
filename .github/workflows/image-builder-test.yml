@@ -22,6 +22,7 @@ jobs:
       name: image-builder
       dockerfile: cmd/image-builder/images/kaniko/Dockerfile
       context: .
+      image-builder-image: europe-docker.pkg.dev/kyma-project/prod/image-builder:latest
 
   retrieve-secrets:
     needs: build-test-image
