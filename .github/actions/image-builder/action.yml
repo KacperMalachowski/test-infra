@@ -88,7 +88,21 @@ runs:
       id: prepare-tags
       shell: bash
 
-    - uses: docker://${{ inputs.image-builder-image }}
+    - run: |
+        # Collect all environment variables
+        ENV_VARS=$(env | awk -F= '{print $1}')
+        
+        # Construct the Docker run command with -e for each environment variable
+        DOCKER_CMD="docker run"
+        
+        for VAR in $ENV_VARS; do
+            DOCKER_CMD+=" -e $VAR"
+        done
+        
+        # Add the Docker image to the command
+        DOCKER_CMD+=" $DOCKER_IMAGE --name=${{ inputs.image-name }} --context=${{ inputs.context }} --dockerfile=${{ inputs.dockerfile }} --azure-access-token=${{ inputs.ado-token }} --oidc-token=${{ inputs.oidc-token }} ${{ steps.prepare-build-args.outputs.build-args }} ${{ steps.prepare-tags.outputs.tags }} --export-tags=${{ inputs.export-tags }} --config=${{ inputs.config }} --env-file=${{ inputs.env-file }} --build-in-ado=true --use-go-internal-sap-modules=${{ inputs.use-go-internal-sap-modules }}"
+        
+        # Execute the Docker run command
+        eval $DOCKER_CMD
       id: build
-      with:
-        args: --name=${{ inputs.image-name }} --context=${{ inputs.context }} --dockerfile=${{ inputs.dockerfile }} --azure-access-token=${{ inputs.ado-token }} --oidc-token=${{ inputs.oidc-token }} ${{ steps.prepare-build-args.outputs.build-args }} ${{ steps.prepare-tags.outputs.tags }} --export-tags=${{ inputs.export-tags }} --config=${{ inputs.config }} --env-file=${{ inputs.env-file }} --build-in-ado=true --use-go-internal-sap-modules=${{ inputs.use-go-internal-sap-modules }}
+      shell: bash
