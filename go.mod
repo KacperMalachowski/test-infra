@@ -2,7 +2,7 @@ module github.com/kyma-project/test-infra
 
 go 1.23.0
 
-toolchain go1.23.4
+toolchain go1.23.4 
 
 require (
 	cloud.google.com/go/compute/metadata v0.6.0
