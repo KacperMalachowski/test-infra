@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kyma-project/test-infra/pkg/tags"
+	"go.uber.org/zap"
 )
 
 func Test_ParseConfig(t *testing.T) {
@@ -371,12 +372,54 @@ func TestLoadGitStateConfig(t *testing.T) {
 			},
 			gitState: GitStateConfig{
 				RepositoryName:    "test-infra",
-				RepositoryOwner:   "edplanes",
+				RepositoryOwner:   "kyma-project",
 				JobType:           "merge_group",
 				BaseCommitSHA:     "659bf74f7b4ecab07d9398eec554217b51bad738",
 				BaseCommitRef:     "refs/heads/main",
-				isPullRequest:     false,
-				PullHeadCommitSHA: "d42c05aa25fc3e8bfff0396086de3fccd4b34c29",
+				isPullRequest:     true,
+				PullHeadCommitSHA: "e47034172c36d3e5fb407b5ba57adf0f7868599d",
+			},
+		},
+		{
+			name: "load data from push event for jenkins",
+			options: options{
+				ciSystem: Jenkins,
+			},
+			env: map[string]string{
+				"CHANGE_BRANCH": "refs/heads/main",
+				"JENKINS_HOME":  "/some/absolute/path",
+				"GIT_URL":       "github.com/kyma-project/test-infra.git",
+				"GIT_COMMIT":    "1234",
+			},
+			gitState: GitStateConfig{
+				RepositoryName:  "test-infra",
+				RepositoryOwner: "kyma-project",
+				JobType:         "postsubmit",
+				BaseCommitSHA:   "1234",
+			},
+		},
+		{
+			name: "load data from pull request event for jenkins",
+			options: options{
+				ciSystem: Jenkins,
+			},
+			env: map[string]string{
+				"CHANGE_BRANCH":   "refs/heads/main",
+				"JENKINS_HOME":    "/some/absolute/path",
+				"CHANGE_ID":       "14",
+				"GIT_URL":         "github.com/kyma-project/test-infra.git",
+				"GIT_COMMIT":      "1234",
+				"CHANGE_BASE_SHA": "4321",
+			},
+			gitState: GitStateConfig{
+				RepositoryName:    "test-infra",
+				RepositoryOwner:   "kyma-project",
+				JobType:           "presubmit",
+				BaseCommitSHA:     "4321",
+				BaseCommitRef:     "refs/heads/main",
+				PullRequestNumber: 14,
+				PullHeadCommitSHA: "1234",
+				isPullRequest:     true,
 			},
 		},
 	}
@@ -388,8 +431,15 @@ func TestLoadGitStateConfig(t *testing.T) {
 				t.Setenv(key, value)
 			}
 
+			// Setup logger
+			zapLogger, err := zap.NewDevelopment()
+			if err != nil {
+				t.Errorf("Failed to initialize logger: %s", err)
+			}
+			logger := zapLogger.Sugar()
+
 			// Load git state
-			state, err := LoadGitStateConfig(c.options.ciSystem)
+			state, err := LoadGitStateConfig(logger, c.options.ciSystem)
 			if err != nil && !c.expectError {
 				t.Errorf("unexpected error occured %s", err)
 			}
@@ -435,6 +485,13 @@ func Test_determineCISystem(t *testing.T) {
 				"GITHUB_ACTIONS": "true",
 			},
 			ciSystem: GithubActions,
+		},
+		{
+			name: "detect running in jenkins",
+			env: mockEnv{
+				"JENKINS_HOME": "/some/absolute/path",
+			},
+			ciSystem: Jenkins,
 		},
 		{
 			name: "unknown ci system",

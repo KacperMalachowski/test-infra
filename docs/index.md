@@ -24,8 +24,6 @@
 
 [External Secrets Checker](/cmd/tools/externalsecretschecker/README.md) - This command checks external Secrets synchronization status, and if every Secret has a corresponding external Secret.
 
-[Job Guard](/cmd/tools/jobguard/README.md) - Job Guard was moved to the [`cmd`](/cmd/jobguard) directory.
-
 [Artifact Registry Creator Tool (GCP, Terraform)](/configs/terraform/modules/artifact-registry/README.md) - This is the GCP image registry creator tool. Use the registry to publish modules that should be accessible to internal SAP teams.
 
 [Documentation Guidelines](/docs/documentation_guidelines.md) - Follow the rules listed in this document to provide high-quality documentation.
@@ -59,8 +57,6 @@
 [Prow Cluster Monitoring Setup](/docs/prow/prow-monitoring.md) - This document describes how to install and manage Prow cluster monitoring. 
 
 [Prow Test Clusters](/docs/prow/test-clusters.md) - This document gathers information about test clusters that Prow jobs build. All test clusters are built in the `sap-kyma-prow-workloads` project.
-
-[Tide Introduction](/docs/prow/tide-introduction-notes.md) - Along with the Prow upgrade, we want to introduce Tide for merging the PRs automatically.
 
 [Prow Workload Clusters](/docs/prow/workload-clusters.md) - This document describes workload clusters on which Prow schedules Pods to execute the logic of a given Prow job. All workload clusters are aggregated under the `kyma-prow` Google Cloud project. We use two workload clusters for trusted and untrusted Prow jobs.
 

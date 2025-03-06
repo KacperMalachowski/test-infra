@@ -14,14 +14,13 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
 	adopipelines "github.com/kyma-project/test-infra/pkg/azuredevops/pipelines"
-	"github.com/kyma-project/test-infra/pkg/extractimageurls"
 	"github.com/kyma-project/test-infra/pkg/github/actions"
+	"github.com/kyma-project/test-infra/pkg/imagebuilder"
 	"github.com/kyma-project/test-infra/pkg/logging"
 	"github.com/kyma-project/test-infra/pkg/sets"
 	"github.com/kyma-project/test-infra/pkg/sign"
@@ -65,6 +64,12 @@ type options struct {
 	dryRun                  bool
 	tagsOutputFile          string
 	useGoInternalSAPModules bool
+	// buildReportPath is a path to the file where the build report will be saved
+	// build report will be used by SRE team to gather information about the build
+	buildReportPath string
+	// adoStateOutput indicates if the success or failure of the command (sign or build) should be
+	// reported as an output variable in Azure DevOps
+	adoStateOutput bool
 }
 
 type Logger interface {
@@ -255,7 +260,7 @@ func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilder
 		templateParameters.SetImageTags(options.tags.String())
 	}
 
-	if options.ciSystem == GithubActions {
+	if options.oidcToken != "" {
 		templateParameters.SetAuthorization(options.oidcToken)
 	}
 
@@ -330,6 +335,7 @@ func buildInADO(o options) error {
 	var (
 		pipelineRunResult *pipelines.RunResult
 		logs              string
+		buildReport       *imagebuilder.BuildReport
 	)
 	if !o.dryRun {
 		ctx := context.Background()
@@ -371,6 +377,15 @@ func buildInADO(o options) error {
 		} else {
 			fmt.Printf("ADO pipeline image build logs:\n%s", logs)
 		}
+
+		fmt.Println("Getting build report.")
+		// Parse the build report from the ADO pipeline run logs.
+		buildReport, err = imagebuilder.NewBuildReportFromLogs(logs)
+		if err != nil {
+			return fmt.Errorf("build in ADO failed, failed parsing build report from ADO pipeline run logs, err: %s", err)
+		}
+
+		o.logger.Debugw("Parsed build report from ADO logs", "buildReport", buildReport)
 	} else {
 		dryRunPipelineRunResult := pipelines.RunResult("Succeeded")
 		pipelineRunResult = &dryRunPipelineRunResult
@@ -381,29 +396,32 @@ func buildInADO(o options) error {
 	// if run in github actions, set output parameters
 	if o.ciSystem == GithubActions {
 		fmt.Println("Setting GitHub outputs.")
-		var images []string
-		if !o.dryRun {
-			images = extractImagesFromADOLogs(logs)
-			fmt.Printf("Extracted built images from ADO logs: %v\n", images)
-		} else {
-			fmt.Println("Running in dry-run mode. Skipping extracting images and results from ADO.")
-			images = []string{"registry/repo/image1:tag1", "registry/repo/image2:tag2"}
-		}
-		data, err := json.Marshal(images)
+
+		o.logger.Debugw("Extracted built images from ADO logs", "images", buildReport.Images)
+
+		data, err := json.Marshal(buildReport.Images)
 		if err != nil {
 			return fmt.Errorf("cannot marshal list of images: %w", err)
 		}
+
+		o.logger.Debugw("Set GitHub outputs", "images", string(data), "adoResult", string(*pipelineRunResult))
 
 		err = actions.SetOutput("images", string(data))
 		if err != nil {
 			return fmt.Errorf("cannot set images GitHub output: %w", err)
 		}
-		fmt.Println("images GitHub output set")
+
 		err = actions.SetOutput("adoResult", string(*pipelineRunResult))
 		if err != nil {
 			return fmt.Errorf("cannot set adoResult GitHub output: %w", err)
 		}
-		fmt.Println("adoResult GitHub output set")
+	}
+
+	if o.buildReportPath != "" {
+		err = imagebuilder.WriteReportToFile(buildReport, o.buildReportPath)
+		if err != nil {
+			return fmt.Errorf("failed writing build report to file: %w", err)
+		}
 	}
 
 	// Handle the ADO pipeline run failure.
@@ -841,6 +859,8 @@ func (o *options) gatherOptions(flagSet *flag.FlagSet) *flag.FlagSet {
 	flagSet.StringVar(&o.azureAccessToken, "azure-access-token", "", "Token used to authenticate against Azure DevOps API")
 	flagSet.StringVar(&o.tagsOutputFile, "tags-output-file", "/generated-tags.json", "Path to file where generated tags will be written as JSON")
 	flagSet.BoolVar(&o.useGoInternalSAPModules, "use-go-internal-sap-modules", false, "Allow access to Go internal modules in ADO backend")
+	flagSet.StringVar(&o.buildReportPath, "build-report-path", "", "Path to file where build report will be written as JSON")
+	flagSet.BoolVar(&o.adoStateOutput, "ado-state-output", false, "Set output variables with result of image-buidler exececution")
 
 	return flagSet
 }
@@ -869,14 +889,16 @@ func main() {
 
 	// If running inside some CI system, determine which system is used
 	if o.isCI {
-		ciSystem, err := DetermineUsedCISystem()
+		o.ciSystem, err = DetermineUsedCISystem()
 		if err != nil {
-			log.Fatalf("Failed to determine current ci system: %s", err)
+			o.logger.Errorw("Failed to determine current ci system", "error", err)
+			os.Exit(1)
 		}
-		o.ciSystem = ciSystem
-		o.gitState, err = LoadGitStateConfig(ciSystem)
+
+		o.gitState, err = LoadGitStateConfig(o.logger, o.ciSystem)
 		if err != nil {
-			log.Fatalf("Failed to load current git state: %s", err)
+			o.logger.Errorw("Failed to load current git state", "error", err)
+			os.Exit(1)
 		}
 
 		o.logger.Debugw("Git state loaded", "gitState", o.gitState)
@@ -902,8 +924,16 @@ func main() {
 	if o.signOnly {
 		err = signImages(&o, o.imagesToSign)
 		if err != nil {
+			if o.adoStateOutput {
+				adopipelines.SetVariable("signing_success", false, false, true)
+			}
+
 			fmt.Println(err)
 			os.Exit(1)
+		}
+
+		if o.adoStateOutput {
+			adopipelines.SetVariable("signing_success", true, false, true)
 		}
 		os.Exit(0)
 	}
@@ -922,12 +952,13 @@ func main() {
 	if o.buildInADO {
 		err = buildInADO(o)
 		if err != nil {
-			fmt.Printf("Image build failed with error: %s\n", err)
+			o.logger.Errorw("Image build failed", "error", err, "JobType", o.gitState.JobType)
 			os.Exit(1)
 		}
 		os.Exit(0)
 	}
 
+	o.logger.Warnw("Local build is deprecated and will be removed soon, the tool will not support local building anymore. Please migrate to the ADO build backend.")
 	err = buildLocally(o)
 	if err != nil {
 		fmt.Println(err)
@@ -1098,25 +1129,4 @@ func getDockerfileDirPath(logger Logger, o options) (string, error) {
 	dockerfileDirPath := filepath.Join(context, filepath.Dir(o.dockerfile))
 	logger.Debugw("dockerfile directory path constructed", "dockerfileDirPath", dockerfileDirPath)
 	return dockerfileDirPath, err
-}
-
-// extractImagesFromADOLogs extract docker images from Azure DevOps logs to allow us prepare list of images built in ADO backend
-// The list can be than saved and provided as input for developers to use in next steps of their workflows.
-// ADO Logs that we fetch anyway are the simplest solution to get such list from ADO backend.
-func extractImagesFromADOLogs(logs string) []string {
-	re := regexp.MustCompile(`--images-to-sign=(([a-z0-9]+(?:[.-][a-z0-9]+)*/)*([a-z0-9]+(?:[.-][a-z0-9]+)*)(?::[a-z0-9.-]+)?/([a-z0-9-]+)/([a-z0-9-]+)(?::[a-zA-Z0-9.-]+))`)
-	matches := re.FindAllStringSubmatch(logs, -1)
-
-	images := []string{}
-	if len(matches) > 0 {
-		for _, match := range matches {
-			if len(match) > 1 {
-				images = append(images, match[1])
-			}
-		}
-	}
-
-	images = extractimageurls.UniqueImages(images)
-
-	return images
 }

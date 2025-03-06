@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -21,10 +22,9 @@ type Logger interface {
 
 type options struct {
 	token                   string
-	clientID                string
-	trustedWorkflows        []string
 	debug                   bool
 	oidcTokenExpirationTime int // OIDC token expiration time in minutes
+	outputPath              string
 }
 
 var (
@@ -41,15 +41,9 @@ func NewRootCmd() *cobra.Command {
 	It uses OIDC discovery to get the public keys and verify the token whenever the public keys are not cached or expired.`,
 	}
 	rootCmd.PersistentFlags().StringVarP(&opts.token, "token", "t", "", "OIDC token to verify")
-	// This flag should be enabled once we add support for it in the code.
-	// rootCmd.PersistentFlags().StringSliceVarP(&opts.trustedWorkflows, "trusted-workflows", "w", []string{}, "List of trusted workflows")
-	// err := rootCmd.MarkPersistentFlagRequired("trusted-workflows")
-	// if err != nil {
-	// 	panic(err)
-	// }
-	rootCmd.PersistentFlags().StringVarP(&opts.clientID, "client-id", "c", "image-builder", "OIDC token client ID, this is used to verify the audience claim in the token. The value should be the same as the audience claim value in the token.")
 	rootCmd.PersistentFlags().BoolVarP(&opts.debug, "debug", "d", false, "Enable debug mode")
 	rootCmd.PersistentFlags().IntVarP(&opts.oidcTokenExpirationTime, "oidc-token-expiration-time", "e", 10, "OIDC token expiration time in minutes")
+	rootCmd.PersistentFlags().StringVarP(&opts.outputPath, "output-path", "o", "/oidc-verifier-output.json", "Path to the file where the output data will be saved")
 	return rootCmd
 }
 
@@ -72,6 +66,67 @@ func init() {
 	rootCmd = NewRootCmd()
 	verifyCmd = NewVerifyCmd()
 	rootCmd.AddCommand(verifyCmd)
+}
+
+type TrustedIssuerProvider interface {
+	GetIssuer() tioidc.Issuer
+}
+
+// output is a struct that holds the output values that are printed to the file.
+// The data provided in this struct is relevant for the component that uses the OIDC token verifier.
+// The output values are printed to the file in the json format.
+type output struct {
+	GithubURL string `json:"github_url" yaml:"github_url"`
+	ClientID  string `json:"client_id" yaml:"client_id"`
+}
+
+// setGithubURLOutput sets the Github URL value to the output struct.
+// The Github URL value is read from the TokenProcessor trusted issuer.
+func (output *output) setGithubURLOutput(logger Logger, issuerProvider TrustedIssuerProvider) error {
+	var githubURL string
+
+	if githubURL = issuerProvider.GetIssuer().GetGithubURL(); githubURL == "" {
+		return fmt.Errorf("github URL not found in the tokenProcessor trusted issuer: %s", issuerProvider.GetIssuer())
+	}
+
+	output.GithubURL = githubURL
+
+	logger.Debugw("Set output Github URL value", "githubURL", output.GithubURL)
+
+	return nil
+}
+
+// setClientIDOutput sets the client ID value to the output struct.
+// The client ID value is read from the TokenProcessor trusted issuer.
+func (output *output) setClientIDOutput(logger Logger, issuerProvider TrustedIssuerProvider) error {
+	var clientID string
+	if clientID = issuerProvider.GetIssuer().ClientID; clientID == "" {
+		return fmt.Errorf("client ID not found in the tokenProcessor trusted issuer: %s", issuerProvider.GetIssuer())
+	}
+
+	output.ClientID = clientID
+
+	logger.Debugw("Set output client ID value", "clientID", output.ClientID)
+
+	return nil
+}
+
+// writeOutputFile writes the output values to the json file.
+// The file path is specified by the --output-path flag.
+func (output *output) writeOutputFile(logger Logger, path string) error {
+	outputFile, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+
+	err = json.NewEncoder(outputFile).Encode(output)
+	if err != nil {
+		return err
+	}
+
+	logger.Debugw("Output values written to the file", "path", path, "output", output)
+
+	return nil
 }
 
 // isTokenProvided checks if the token flag is set.
@@ -119,28 +174,30 @@ func (opts *options) verifyToken() error {
 		return err
 	}
 
-	// Print used options values.
-	logger.Infow("Using the following trusted workflows", "trusted-workflows", opts.trustedWorkflows)
-	logger.Infow("Using the following client ID", "client-id", opts.clientID)
-
-	// Create a new verifier config that will be used to verify the token.
-	// The clientID is used to verify the audience claim in the token.
-	verifyConfig, err := tioidc.NewVerifierConfig(logger, opts.clientID, tioidc.SkipExpiryCheck())
-	if err != nil {
-		return err
-	}
-	logger.Infow("Verifier config created", "config", verifyConfig)
-
 	// Create a new token processor
 	// It reads issuer from the token and verifies if the issuer is trusted.
 	// The tokenProcessor is a main object that is used to verify the token and extract the claim values.
 	// TODO(dekiel): add support for providing trusted issuers instead of using the value from the package.
-	tokenProcessor, err := tioidc.NewTokenProcessor(logger, tioidc.TrustedOIDCIssuers, opts.token, verifyConfig)
+	tokenProcessor, err := tioidc.NewTokenProcessor(logger, tioidc.TrustedOIDCIssuers, opts.token)
 	if err != nil {
 		return err
 	}
-	logger.Infow("Token processor created for trusted issuer", "issuer", tokenProcessor.Issuer())
-	fmt.Printf("GITHUB_URL=%s\n", tokenProcessor.GetIssuer().GetGithubURL())
+
+	logger = logger.With("issuer", tokenProcessor.Issuer(), "client-id", tokenProcessor.GetIssuer().ClientID, "github-url", tokenProcessor.GetIssuer().GithubURL)
+
+	logger.Infow("Token processor created for trusted issuer")
+
+	// Create a new verifier config that will be used to verify the token.
+	// The standard expiration check is skipped.
+	// We use custom expiration time check to allow longer token expiration time than the value in the token.
+	// The extended expiration time is needed due to Azure DevOps delays in starting the pipeline.
+	// The delay was causing the token to expire before the pipeline started.
+	verifierConfig, err := tokenProcessor.NewVerifierConfig(tioidc.SkipExpiryCheck())
+	if err != nil {
+		return err
+	}
+
+	logger.Infow("Verifier config created")
 
 	ctx := context.Background()
 	// Create a new provider using OIDC discovery to get the public keys.
@@ -153,10 +210,15 @@ func (opts *options) verifyToken() error {
 
 	// Create a new verifier using the provider and the verifier config.
 	// The verifier is used to verify the token signature, expiration time and execute standard OIDC validation.
-	verifier, err := provider.NewVerifier(logger, verifyConfig, tioidc.WithExtendedExpiration(opts.oidcTokenExpirationTime))
+	// TODO (dekiel): Consider using verifier config as the only way to parametrize the verification process.
+	//   The WithExtendedExpiration could be moved to the verifier config.
+	//   The WithExtendedExpiration could disable the standard expiration check.
+	//   This would allow to have a single place to configure the verification process.
+	verifier, err := provider.NewVerifier(logger, verifierConfig, tioidc.WithExtendedExpiration(opts.oidcTokenExpirationTime))
 	if err != nil {
 		return err
 	}
+
 	logger.Infow("New verifier created")
 
 	// Verify the token
@@ -164,10 +226,12 @@ func (opts *options) verifyToken() error {
 	if err != nil {
 		return err
 	}
+
 	logger.Infow("Token verified successfully")
 
 	// Create claims
 	claims := tioidc.NewClaims(logger)
+
 	logger.Infow("Verifying token claims")
 
 	// Pass the token to ValidateClaims
@@ -176,8 +240,27 @@ func (opts *options) verifyToken() error {
 	if err != nil {
 		return err
 	}
+
 	logger.Infow("Token claims expectations verified successfully")
 	logger.Infow("All token checks passed successfully")
+
+	outputData := output{}
+	err = outputData.setGithubURLOutput(logger, &tokenProcessor)
+	if err != nil {
+		return err
+	}
+
+	err = outputData.setClientIDOutput(logger, &tokenProcessor)
+	if err != nil {
+		return err
+	}
+
+	err = outputData.writeOutputFile(logger, opts.outputPath)
+	if err != nil {
+		return err
+	}
+
+	logger.Infow("Output data written to the file", "path", opts.outputPath)
 
 	return nil
 }
