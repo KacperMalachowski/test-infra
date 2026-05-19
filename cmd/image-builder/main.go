@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	adoauth "github.com/kyma-project/test-infra/pkg/azuredevops/auth"
 	adopipelines "github.com/kyma-project/test-infra/pkg/azuredevops/pipelines"
 	"github.com/kyma-project/test-infra/pkg/github/actions"
 	"github.com/kyma-project/test-infra/pkg/imagebuilder"
@@ -42,13 +43,20 @@ type options struct {
 	platforms  sets.Strings
 	exportTags bool
 	// signOnly only sign images. No build will be performed.
-	signOnly                bool
-	imagesToSign            sets.Strings
-	adoPreviewRun           bool
-	adoPreviewRunYamlPath   string
-	parseTagsOnly           bool
-	oidcToken               string
-	azureAccessToken        string
+	signOnly              bool
+	imagesToSign          sets.Strings
+	adoPreviewRun         bool
+	adoPreviewRunYamlPath string
+	parseTagsOnly         bool
+	oidcToken             string
+	azureAccessToken      string
+	// azureSPTenantID, azureSPClientID, azureSPClientSecret are the Azure AD
+	// Service Principal credentials used to acquire a Bearer token for the ADO
+	// API (Option A). When all three are set they take precedence over
+	// azureAccessToken and ADO_PAT. This is the PoC for issue #484.
+	azureSPTenantID         string
+	azureSPClientID         string
+	azureSPClientSecret     string
 	ciSystem                CISystem
 	gitState                GitStateConfig
 	debug                   bool
@@ -175,19 +183,22 @@ func prepareADOTemplateParameters(options options) (adopipelines.OCIImageBuilder
 // This is used for pipeline syntax validation.
 // If the pipeline run fails, the function returns an error.
 // If the pipeline run is successful, the function returns nil.
+//
+// Authentication priority (highest to lowest):
+//  1. Azure AD Service Principal (--azure-sp-tenant-id + --azure-sp-client-id + --azure-sp-client-secret)
+//  2. Explicit Bearer/PAT token (--azure-access-token flag)
+//  3. ADO_PAT environment variable
+//
 // TODO(dekiel): refactor this function to accept clients as parameters to make it testable with mocks.
 func buildInADO(o options) error {
 	fmt.Println("Building image in ADO pipeline.")
 
-	// Getting Azure DevOps Personal Access Token (ADO_PAT) from environment variable for authentication with ADO API when it's not set via flag.
-	if o.azureAccessToken == "" && !o.dryRun {
-		adoPAT, present := os.LookupEnv("ADO_PAT")
-		if !present {
-			return fmt.Errorf("build in ADO failed, ADO_PAT environment variable is not set, please set it to valid ADO PAT")
-		}
-		o.azureAccessToken = adoPAT
-	} else if o.dryRun {
-		fmt.Println("Running in dry-run mode. Skipping getting ADO PAT.")
+	ctx := context.Background()
+
+	// Resolve the ADO access token using the configured authentication method.
+	// Priority: Service Principal > explicit flag > ADO_PAT env var.
+	if err := resolveADOAccessToken(ctx, &o); err != nil {
+		return err
 	}
 
 	fmt.Println("Preparing ADO template parameters.")
@@ -198,8 +209,10 @@ func buildInADO(o options) error {
 	}
 	fmt.Printf("Using TemplateParameters: %+v\n", templateParameters)
 
-	// Creating a new ADO pipelines client.
-	adoClient := adopipelines.NewClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+	// Creating a new ADO pipelines client using the resolved access token.
+	// The token may be a PAT (Basic auth) or an AAD Bearer token depending on
+	// which authentication method was resolved above.
+	adoClient := resolveADOClient(o)
 
 	var opts []adopipelines.RunPipelineArgsOptions
 	// If running in preview mode, add a preview run option to the ADO pipeline run arguments.
@@ -223,7 +236,6 @@ func buildInADO(o options) error {
 		buildReport       *imagebuilder.BuildReport
 	)
 	if !o.dryRun {
-		ctx := context.Background()
 		// Triggering ADO build pipeline.
 		pipelineRun, err := adoClient.RunPipeline(ctx, runPipelineArgs)
 		if err != nil {
@@ -251,8 +263,8 @@ func buildInADO(o options) error {
 
 		// Fetch the ADO pipeline run logs.
 		fmt.Println("Getting ADO pipeline run logs.")
-		// Creating a new ADO build client.
-		adoBuildClient, err := adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+		// Creating a new ADO build client using the same resolved token.
+		adoBuildClient, err := resolveADOBuildClient(o)
 		if err != nil {
 			fmt.Printf("Can't read ADO pipeline run logs, failed creating ADO build client, err: %s", err)
 		}
@@ -337,6 +349,86 @@ func buildInADO(o options) error {
 		return fmt.Errorf("build in ADO finished with status: %s", *pipelineRunResult)
 	}
 	return nil
+}
+
+// resolveADOAccessToken populates o.azureAccessToken using the highest-priority
+// authentication method available. It mutates the options in place.
+//
+// Priority:
+//  1. Azure AD Service Principal (all three SP flags set) — acquires a Bearer token
+//     from the Azure AD token endpoint using the client-credentials flow.
+//  2. Explicit token already set via --azure-access-token flag — used as-is.
+//  3. ADO_PAT environment variable — classic PAT fallback.
+//
+// In dry-run mode the function skips all credential resolution and returns nil.
+func resolveADOAccessToken(ctx context.Context, o *options) error {
+	if o.dryRun {
+		fmt.Println("Running in dry-run mode. Skipping ADO token resolution.")
+		return nil
+	}
+
+	// Option A — Service Principal: all three SP flags must be set together.
+	if o.azureSPTenantID != "" || o.azureSPClientID != "" || o.azureSPClientSecret != "" {
+		fmt.Println("Azure AD Service Principal credentials provided, acquiring AAD token.")
+		spConfig := adoauth.ServicePrincipalConfig{
+			TenantID:     o.azureSPTenantID,
+			ClientID:     o.azureSPClientID,
+			ClientSecret: o.azureSPClientSecret,
+		}
+		ts, err := adoauth.NewServicePrincipalTokenSource(ctx, spConfig)
+		if err != nil {
+			return fmt.Errorf("build in ADO failed, cannot create service principal token source: %w", err)
+		}
+		token, err := ts.ADOToken(ctx)
+		if err != nil {
+			return fmt.Errorf("build in ADO failed, cannot acquire Azure AD token: %w", err)
+		}
+		// Store the raw token; resolveADOClient will prepend "Bearer ".
+		o.azureAccessToken = token
+		fmt.Println("Azure AD token acquired successfully via Service Principal.")
+		return nil
+	}
+
+	// Explicit token already provided via --azure-access-token flag — nothing to do.
+	if o.azureAccessToken != "" {
+		fmt.Println("Using explicitly provided azure-access-token.")
+		return nil
+	}
+
+	// Classic PAT fallback via environment variable.
+	adoPAT, present := os.LookupEnv("ADO_PAT")
+	if !present {
+		return fmt.Errorf("build in ADO failed, no ADO credentials found: set --azure-sp-* flags for Service Principal auth, --azure-access-token for an explicit token, or ADO_PAT environment variable for PAT auth")
+	}
+	o.azureAccessToken = adoPAT
+	fmt.Println("Using ADO_PAT environment variable for authentication.")
+	return nil
+}
+
+// resolveADOClient creates the correct ADO pipelines client based on the
+// authentication method that was resolved by resolveADOAccessToken.
+//
+// When the token was acquired from a Service Principal (Option A), it is a raw
+// Bearer token and NewClientWithAADToken is used. In all other cases the token
+// is treated as a PAT and NewClient (Basic auth) is used.
+func resolveADOClient(o options) adopipelines.Client {
+	if o.azureSPTenantID != "" {
+		fmt.Println("Creating ADO client with Azure AD Bearer token (Service Principal).")
+		return adopipelines.NewClientWithAADToken(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+	}
+	fmt.Println("Creating ADO client with PAT (Basic auth).")
+	return adopipelines.NewClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+}
+
+// resolveADOBuildClient creates the correct ADO build client based on the
+// authentication method that was resolved by resolveADOAccessToken.
+func resolveADOBuildClient(o options) (adopipelines.BuildClient, error) {
+	if o.azureSPTenantID != "" {
+		fmt.Println("Creating ADO build client with Azure AD Bearer token (Service Principal).")
+		return adopipelines.NewBuildClientWithAADToken(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+	}
+	fmt.Println("Creating ADO build client with PAT (Basic auth).")
+	return adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
 }
 
 // TODO: write tests for this function
@@ -543,6 +635,12 @@ func (o *options) gatherOptions(flagSet *flag.FlagSet) *flag.FlagSet {
 	flagSet.BoolVar(&o.parseTagsOnly, "parse-tags-only", false, "Only parse tags and print them to stdout")
 	flagSet.StringVar(&o.oidcToken, "oidc-token", "", "Token used to authenticate against Azure DevOps backend service")
 	flagSet.StringVar(&o.azureAccessToken, "azure-access-token", "", "Token used to authenticate against Azure DevOps API")
+	// Azure AD Service Principal flags (Option A PoC — issue #484).
+	// When all three are provided they take precedence over --azure-access-token and ADO_PAT.
+	// The tenant ID and client ID are not sensitive; only the client secret is.
+	flagSet.StringVar(&o.azureSPTenantID, "azure-sp-tenant-id", "", "Azure AD tenant ID for Service Principal authentication (PoC: issue #484)")
+	flagSet.StringVar(&o.azureSPClientID, "azure-sp-client-id", "", "Azure AD application (client) ID for Service Principal authentication (PoC: issue #484)")
+	flagSet.StringVar(&o.azureSPClientSecret, "azure-sp-client-secret", "", "Azure AD client secret for Service Principal authentication (PoC: issue #484). Prefer passing via AZURE_SP_CLIENT_SECRET env var.")
 	flagSet.StringVar(&o.tagsOutputFile, "tags-output-file", "/generated-tags.json", "Path to file where generated tags will be written as JSON")
 	flagSet.BoolVar(&o.useGoInternalSAPModules, "use-go-internal-sap-modules", false, "Allow access to Go internal modules in ADO backend")
 	flagSet.StringVar(&o.buildReportPath, "build-report-path", "", "Path to file where build report will be written as JSON")
