@@ -111,6 +111,50 @@ func NewClient(adoOrganizationURL, adoPAT string) Client {
 	return pipelines.NewClient(ctx, adoConnection)
 }
 
+// NewClientWithAADToken creates a new Azure DevOps (ADO) pipelines client that
+// authenticates using an Azure Active Directory (AAD) Bearer token instead of a PAT.
+//
+// This is the preferred authentication method for Service Principals and workload
+// identities. The aadToken must be a valid OAuth2 access token scoped to the
+// Azure DevOps resource (scope: 499b84ac-1321-427f-aa17-267ca6975798/.default).
+//
+// Parameters:
+// adoOrganizationURL - is the URL of the ADO organization containing the pipelines.
+// aadToken           - is the Azure AD Bearer access token for authentication.
+//
+// TODO: write tests which use BeAssignableToTypeOf matcher https://onsi.github.io/gomega/#beassignabletotypeofexpected-interface
+func NewClientWithAADToken(adoOrganizationURL, aadToken string) Client {
+	adoConnection := &adov7.Connection{
+		AuthorizationString:     "Bearer " + aadToken,
+		BaseUrl:                 adoOrganizationURL,
+		SuppressFedAuthRedirect: true,
+	}
+	ctx := context.Background()
+	return pipelines.NewClient(ctx, adoConnection)
+}
+
+// NewBuildClientWithAADToken creates a new Azure DevOps (ADO) build client that
+// authenticates using an Azure Active Directory (AAD) Bearer token instead of a PAT.
+//
+// The build client is used to retrieve build logs and timeline for a specific
+// pipeline run. The aadToken must be a valid OAuth2 access token scoped to the
+// Azure DevOps resource (scope: 499b84ac-1321-427f-aa17-267ca6975798/.default).
+//
+// Parameters:
+// adoOrganizationURL - is the URL of the ADO organization containing the pipelines.
+// aadToken           - is the Azure AD Bearer access token for authentication.
+//
+// TODO: write tests which use BeAssignableToTypeOf matcher https://onsi.github.io/gomega/#beassignabletotypeofexpected-interface
+func NewBuildClientWithAADToken(adoOrganizationURL, aadToken string) (BuildClient, error) {
+	buildConnection := &adov7.Connection{
+		AuthorizationString:     "Bearer " + aadToken,
+		BaseUrl:                 adoOrganizationURL,
+		SuppressFedAuthRedirect: true,
+	}
+	ctx := context.Background()
+	return build.NewClient(ctx, buildConnection)
+}
+
 // NewBuildClient creates a new Azure DevOps (ADO) build client to interact with ADO pipelines.
 // Build client is used to get build logs and timeline for a specific pipeline run.
 // It takes the ADO organization URL and a personal access token (PAT) as input parameters.

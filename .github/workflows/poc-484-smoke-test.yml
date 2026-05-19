@@ -1,0 +1,21 @@
+name: poc-484-smoke-test (option-b)
+# Smoke test for PoC #484 option-b: GitHub Actions workflow acquires an Azure AD
+# Bearer token from the Azure AD token endpoint using SP credentials stored in
+# GCP Secret Manager, then passes it to image-builder as --azure-access-token
+# with --azure-access-token-type=bearer.
+#
+# Reuses the existing cmd/oidc-token-verifier/Dockerfile as a trivial build target.
+# The built image is pushed as test-infra/poc-484-smoke-test.
+
+on:
+  workflow_dispatch: # Manual trigger only — this is a PoC smoke test
+
+jobs:
+  smoke-test:
+    uses: kyma-project/test-infra/.github/workflows/image-builder.yml@poc/484-option-b
+    with:
+      name: test-infra/poc-484-smoke-test
+      dockerfile: cmd/oidc-token-verifier/Dockerfile
+      context: .
+      platforms: |
+        linux/amd64

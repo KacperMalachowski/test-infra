@@ -42,13 +42,18 @@ type options struct {
 	platforms  sets.Strings
 	exportTags bool
 	// signOnly only sign images. No build will be performed.
-	signOnly                bool
-	imagesToSign            sets.Strings
-	adoPreviewRun           bool
-	adoPreviewRunYamlPath   string
-	parseTagsOnly           bool
-	oidcToken               string
-	azureAccessToken        string
+	signOnly              bool
+	imagesToSign          sets.Strings
+	adoPreviewRun         bool
+	adoPreviewRunYamlPath string
+	parseTagsOnly         bool
+	oidcToken             string
+	azureAccessToken      string
+	// azureAccessTokenType controls how azureAccessToken is used when calling the ADO API.
+	// Accepted values: "pat" (default, Basic auth) or "bearer" (Bearer auth for AAD tokens).
+	// This is used by Option B of PoC #484 where the GitHub Actions workflow acquires the
+	// Bearer token externally and passes it via --azure-access-token.
+	azureAccessTokenType    string
 	ciSystem                CISystem
 	gitState                GitStateConfig
 	debug                   bool
@@ -199,7 +204,15 @@ func buildInADO(o options) error {
 	fmt.Printf("Using TemplateParameters: %+v\n", templateParameters)
 
 	// Creating a new ADO pipelines client.
-	adoClient := adopipelines.NewClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+	// When --azure-access-token-type=bearer the token is an AAD Bearer token (e.g. acquired
+	// by the GitHub Actions workflow via the Azure AD token endpoint). In that case we must
+	// NOT wrap it with Basic/PAT auth — use the Bearer connection instead.
+	var adoClient adopipelines.Client
+	if o.azureAccessTokenType == "bearer" {
+		adoClient = adopipelines.NewClientWithAADToken(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+	} else {
+		adoClient = adopipelines.NewClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+	}
 
 	var opts []adopipelines.RunPipelineArgsOptions
 	// If running in preview mode, add a preview run option to the ADO pipeline run arguments.
@@ -252,7 +265,12 @@ func buildInADO(o options) error {
 		// Fetch the ADO pipeline run logs.
 		fmt.Println("Getting ADO pipeline run logs.")
 		// Creating a new ADO build client.
-		adoBuildClient, err := adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+		var adoBuildClient adopipelines.BuildClient
+		if o.azureAccessTokenType == "bearer" {
+			adoBuildClient, err = adopipelines.NewBuildClientWithAADToken(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+		} else {
+			adoBuildClient, err = adopipelines.NewBuildClient(o.AdoConfig.ADOOrganizationURL, o.azureAccessToken)
+		}
 		if err != nil {
 			fmt.Printf("Can't read ADO pipeline run logs, failed creating ADO build client, err: %s", err)
 		}
@@ -543,6 +561,7 @@ func (o *options) gatherOptions(flagSet *flag.FlagSet) *flag.FlagSet {
 	flagSet.BoolVar(&o.parseTagsOnly, "parse-tags-only", false, "Only parse tags and print them to stdout")
 	flagSet.StringVar(&o.oidcToken, "oidc-token", "", "Token used to authenticate against Azure DevOps backend service")
 	flagSet.StringVar(&o.azureAccessToken, "azure-access-token", "", "Token used to authenticate against Azure DevOps API")
+	flagSet.StringVar(&o.azureAccessTokenType, "azure-access-token-type", "pat", "Type of the azure-access-token: 'pat' (default, Basic auth) or 'bearer' (AAD Bearer token, PoC #484 option-b)")
 	flagSet.StringVar(&o.tagsOutputFile, "tags-output-file", "/generated-tags.json", "Path to file where generated tags will be written as JSON")
 	flagSet.BoolVar(&o.useGoInternalSAPModules, "use-go-internal-sap-modules", false, "Allow access to Go internal modules in ADO backend")
 	flagSet.StringVar(&o.buildReportPath, "build-report-path", "", "Path to file where build report will be written as JSON")

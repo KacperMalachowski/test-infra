@@ -119,19 +119,44 @@ jobs:
           project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GH_COM_KYMA_PROJECT_GCP_WORKLOAD_IDENTITY_FEDERATION_PROVIDER }}
 
-      - name: Get ADO PAT from Secret Manager
+      - name: Get Azure AD SP credentials from Secret Manager
         id: "secrets"
         uses: "google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262" # v3
         with:
           secrets: |-
-            ado-pat:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_ADO_PAT_GCP_SECRET_NAME }}
+            azure-sp-tenant-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_TENANT_ID_SECRET_NAME }}
+            azure-sp-client-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_ID_SECRET_NAME }}
+            azure-sp-client-secret:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_SECRET_SECRET_NAME }}
+
+      - name: Acquire Azure AD Bearer token for ADO
+        id: "ado-token"
+        shell: bash
+        run: |
+          # Exchange SP client credentials for an Azure AD Bearer token scoped to Azure DevOps.
+          # Scope: 499b84ac-1321-427f-aa17-267ca6975798/.default (Azure DevOps resource ID)
+          RESPONSE=$(curl --silent --fail --show-error \
+            --request POST \
+            --url "https://login.microsoftonline.com/${{ steps.secrets.outputs.azure-sp-tenant-id }}/oauth2/v2.0/token" \
+            --header "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=${{ steps.secrets.outputs.azure-sp-client-id }}" \
+            --data-urlencode "client_secret=${{ steps.secrets.outputs.azure-sp-client-secret }}" \
+            --data-urlencode "scope=499b84ac-1321-427f-aa17-267ca6975798/.default")
+          TOKEN=$(echo "$RESPONSE" | jq --raw-output '.access_token')
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "Failed to acquire Azure AD token. Response: $RESPONSE"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
       - name: Build image
         id: build
         uses: ./.github/actions/image-builder
         with:
           oidc-token: ${{ steps.get_oidc.outputs.jwt }}
-          ado-token: ${{ steps.secrets.outputs.ado-pat }}
+          ado-token: ${{ steps.ado-token.outputs.token }}
+          ado-token-type: "bearer"
           context: ${{ inputs.context }}
           build-args: ${{ inputs.build-args }}
           tags: ${{ inputs.tags }}
