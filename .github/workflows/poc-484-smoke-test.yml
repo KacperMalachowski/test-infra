@@ -1,8 +1,9 @@
 name: poc-484-smoke-test (option-b)
-# Smoke test for PoC #484 option-b: GitHub Actions workflow acquires an Azure AD
-# Bearer token from the Azure AD token endpoint using SP credentials stored in
-# GCP Secret Manager, then passes it to image-builder as --azure-access-token
-# with --azure-access-token-type=bearer.
+# Smoke test for PoC #484 option-b: the workflow acquires an Azure AD Bearer
+# token from the Azure AD token endpoint using SP credentials stored in GCP
+# Secret Manager, then passes it directly to the image-builder binary as
+# --azure-access-token with --azure-access-token-type=bearer — no composite
+# action involved.
 #
 # Reuses the existing cmd/oidc-token-verifier/Dockerfile as a trivial build target.
 # The built image is pushed as test-infra/poc-484-smoke-test.
@@ -12,10 +13,73 @@ on:
 
 jobs:
   smoke-test:
-    uses: kyma-project/test-infra/.github/workflows/image-builder.yml@poc/484-option-b
-    with:
-      name: test-infra/poc-484-smoke-test
-      dockerfile: cmd/oidc-token-verifier/Dockerfile
-      context: .
-      platforms: |
-        linux/amd64
+    permissions:
+      id-token: write # Required for requesting the OIDC JWT token
+      contents: read  # Required for actions/checkout
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test-infra repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: kyma-project/test-infra
+          ref: poc/484-option-b
+
+      - name: Install Node.js and needed dependencies
+        uses: ./.github/actions/expose-jwt-action/install
+
+      - name: Get OIDC token
+        id: get_oidc
+        uses: ./.github/actions/expose-jwt-action
+        with:
+          audience: "image-builder"
+
+      - name: Authenticate in GCP
+        id: auth
+        uses: "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093" # v3
+        with:
+          project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GH_COM_KYMA_PROJECT_GCP_WORKLOAD_IDENTITY_FEDERATION_PROVIDER }}
+
+      - name: Get Azure AD SP credentials from Secret Manager
+        id: secrets
+        uses: "google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262" # v3
+        with:
+          secrets: |-
+            azure-sp-tenant-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_TENANT_ID_SECRET_NAME }}
+            azure-sp-client-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_ID_SECRET_NAME }}
+            azure-sp-client-secret:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_SECRET_SECRET_NAME }}
+
+      - name: Acquire Azure AD Bearer token for ADO
+        id: ado-token
+        shell: bash
+        run: |
+          # Exchange SP client credentials for an Azure AD Bearer token scoped to Azure DevOps.
+          # Scope: 499b84ac-1321-427f-aa17-267ca6975798/.default (Azure DevOps resource ID)
+          RESPONSE=$(curl --silent --fail --show-error \
+            --request POST \
+            --url "https://login.microsoftonline.com/${{ steps.secrets.outputs.azure-sp-tenant-id }}/oauth2/v2.0/token" \
+            --header "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=${{ steps.secrets.outputs.azure-sp-client-id }}" \
+            --data-urlencode "client_secret=${{ steps.secrets.outputs.azure-sp-client-secret }}" \
+            --data-urlencode "scope=499b84ac-1321-427f-aa17-267ca6975798/.default")
+          TOKEN=$(echo "$RESPONSE" | jq --raw-output '.access_token')
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "Failed to acquire Azure AD token. Response: $RESPONSE"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        uses: docker://europe-docker.pkg.dev/kyma-project/prod/image-builder:v20260515102704
+        with:
+          args: >-
+            --name=test-infra/poc-484-smoke-test
+            --dockerfile=cmd/oidc-token-verifier/Dockerfile
+            --context=.
+            --platform="linux/amd64"
+            --azure-access-token=${{ steps.ado-token.outputs.token }}
+            --azure-access-token-type=bearer
+            --oidc-token=${{ steps.get_oidc.outputs.jwt }}
+            --config=./configs/image-builder-client-config.yaml
