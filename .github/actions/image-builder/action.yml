@@ -5,8 +5,21 @@ inputs:
     description: The JWT token to authenticate against Azure DevOps image builder backend
     required: true
   ado-token:
-    description: The personal access token to authenticate against Azure DevOps API
-    required: true
+    description: "The personal access token to authenticate against Azure DevOps API. Not required when azure-sp-* inputs are provided (PoC #484 option-a)."
+    required: false
+    default: ""
+  azure-sp-tenant-id:
+    description: "Azure AD tenant ID for Service Principal authentication. When all three azure-sp-* inputs are set they take precedence over ado-token (PoC #484 option-a)."
+    required: false
+    default: ""
+  azure-sp-client-id:
+    description: "Azure AD application (client) ID for Service Principal authentication (PoC #484 option-a)."
+    required: false
+    default: ""
+  azure-sp-client-secret:
+    description: "Azure AD client secret for Service Principal authentication (PoC #484 option-a)."
+    required: false
+    default: ""
   image-name:
     description: Name of the build image
     required: true
@@ -116,4 +129,4 @@ runs:
     - uses: docker://europe-docker.pkg.dev/kyma-project/prod/image-builder:v20260515102704
       id: build
       with:
-        args: --name=${{ inputs.image-name }} --context=${{ inputs.context }} --dockerfile=${{ inputs.dockerfile }} --target=${{ inputs.target }} --azure-access-token=${{ inputs.ado-token }} --oidc-token=${{ inputs.oidc-token }} ${{ steps.prepare-build-args.outputs.build-args }} ${{ steps.prepare-tags.outputs.tags }} ${{ steps.prepare-platforms.outputs.platforms }} --export-tags=${{ inputs.export-tags }} --config=${{ inputs.config }} --use-go-internal-sap-modules=${{ inputs.use-go-internal-sap-modules }} --use-restricted-registry=${{ inputs.use-restricted-registry }}
+        args: --name=${{ inputs.image-name }} --context=${{ inputs.context }} --dockerfile=${{ inputs.dockerfile }} --target=${{ inputs.target }} --azure-access-token=${{ inputs.ado-token }} --azure-sp-tenant-id=${{ inputs.azure-sp-tenant-id }} --azure-sp-client-id=${{ inputs.azure-sp-client-id }} --azure-sp-client-secret=${{ inputs.azure-sp-client-secret }} --oidc-token=${{ inputs.oidc-token }} ${{ steps.prepare-build-args.outputs.build-args }} ${{ steps.prepare-tags.outputs.tags }} ${{ steps.prepare-platforms.outputs.platforms }} --export-tags=${{ inputs.export-tags }} --config=${{ inputs.config }} --use-go-internal-sap-modules=${{ inputs.use-go-internal-sap-modules }} --use-restricted-registry=${{ inputs.use-restricted-registry }}

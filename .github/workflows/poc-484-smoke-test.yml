@@ -1,0 +1,64 @@
+name: poc-484-smoke-test (option-a)
+# Smoke test for PoC #484 option-a: image-builder binary acquires an Azure AD
+# Bearer token internally using --azure-sp-* flags. SP credentials are fetched
+# from GCP Secret Manager and passed to the composite action as azure-sp-* inputs,
+# which wires them through to the binary as --azure-sp-* flags.
+#
+# Reuses the existing cmd/oidc-token-verifier/Dockerfile as a trivial build target.
+# The built image is pushed as test-infra/poc-484-smoke-test.
+
+on:
+  workflow_dispatch: # Manual trigger only — this is a PoC smoke test
+
+jobs:
+  smoke-test:
+    permissions:
+      id-token: write # Required for requesting the OIDC JWT token
+      contents: read  # Required for actions/checkout
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test-infra repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: kyma-project/test-infra
+          ref: poc/484-option-a
+
+      - name: Install Node.js and needed dependencies
+        uses: ./.github/actions/expose-jwt-action/install
+
+      - name: Get OIDC token
+        id: get_oidc
+        uses: ./.github/actions/expose-jwt-action
+        with:
+          audience: "image-builder"
+
+      - name: Authenticate in GCP
+        id: auth
+        uses: "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093" # v3
+        with:
+          project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GH_COM_KYMA_PROJECT_GCP_WORKLOAD_IDENTITY_FEDERATION_PROVIDER }}
+
+      - name: Get Azure AD SP credentials from Secret Manager
+        id: secrets
+        uses: "google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262" # v3
+        with:
+          secrets: |-
+            azure-sp-tenant-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_TENANT_ID_SECRET_NAME }}
+            azure-sp-client-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_ID_SECRET_NAME }}
+            azure-sp-client-secret:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_SECRET_SECRET_NAME }}
+
+      - name: Build image
+        id: build
+        uses: ./.github/actions/image-builder
+        with:
+          oidc-token: ${{ steps.get_oidc.outputs.jwt }}
+          azure-sp-tenant-id: ${{ steps.secrets.outputs.azure-sp-tenant-id }}
+          azure-sp-client-id: ${{ steps.secrets.outputs.azure-sp-client-id }}
+          azure-sp-client-secret: ${{ steps.secrets.outputs.azure-sp-client-secret }}
+          image-name: test-infra/poc-484-smoke-test
+          dockerfile: cmd/oidc-token-verifier/Dockerfile
+          context: .
+          platforms: |
+            linux/amd64
+          config: "./configs/image-builder-client-config.yaml"
