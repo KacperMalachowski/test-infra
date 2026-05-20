@@ -1,63 +1,40 @@
 name: poc-484-smoke-test (option-a)
-# Smoke test for PoC #484 option-a: image-builder binary acquires an Azure AD
-# Bearer token internally using --azure-sp-* flags. SP credentials are fetched
-# from GCP Secret Manager and passed directly to the binary — no composite
-# action involved.
+# Smoke test for PoC #484 option-a: the poc-484 tool acquires an Azure AD
+# Bearer token internally via the adoauth library (client-credentials flow)
+# using SP credentials passed as --azure-sp-* flags. No az CLI involved.
 #
-# Reuses the existing cmd/oidc-token-verifier/Dockerfile as a trivial build target.
-# The built image is pushed as test-infra/poc-484-smoke-test.
+# Secrets required on the fork:
+#   AZURE_SP_TENANT_ID      — Azure AD tenant ID
+#   AZURE_SP_CLIENT_ID      — Service Principal application (client) ID
+#   AZURE_SP_CLIENT_SECRET  — Service Principal client secret
+#   ADO_PIPELINE_ID         — ID of the dummy ADO pipeline to trigger
 
 on:
-  workflow_dispatch: # Manual trigger only — this is a PoC smoke test
+  workflow_dispatch:
 
 jobs:
   smoke-test:
-    permissions:
-      id-token: write # Required for requesting the OIDC JWT token
-      contents: read  # Required for actions/checkout
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout test-infra repository
+      - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          repository: kyma-project/test-infra
           ref: poc/484-option-a
 
-      - name: Install Node.js and needed dependencies
-        uses: ./.github/actions/expose-jwt-action/install
-
-      - name: Get OIDC token
-        id: get_oidc
-        uses: ./.github/actions/expose-jwt-action
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          audience: "image-builder"
+          go-version-file: go.mod
 
-      - name: Authenticate in GCP
-        id: auth
-        uses: "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093" # v3
-        with:
-          project_id: ${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GH_COM_KYMA_PROJECT_GCP_WORKLOAD_IDENTITY_FEDERATION_PROVIDER }}
-
-      - name: Get Azure AD SP credentials from Secret Manager
-        id: secrets
-        uses: "google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262" # v3
-        with:
-          secrets: |-
-            azure-sp-tenant-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_TENANT_ID_SECRET_NAME }}
-            azure-sp-client-id:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_ID_SECRET_NAME }}
-            azure-sp-client-secret:${{ vars.GCP_KYMA_PROJECT_PROJECT_ID }}/${{ vars.IMAGE_BUILDER_AZURE_SP_CLIENT_SECRET_SECRET_NAME }}
-
-      - name: Build image
-        uses: docker://europe-docker.pkg.dev/kyma-project/prod/image-builder:v20260515102704
-        with:
-          args: >-
-            --name=test-infra/poc-484-smoke-test
-            --dockerfile=cmd/oidc-token-verifier/Dockerfile
-            --context=.
-            --platform="linux/amd64"
-            --azure-sp-tenant-id=${{ steps.secrets.outputs.azure-sp-tenant-id }}
-            --azure-sp-client-id=${{ steps.secrets.outputs.azure-sp-client-id }}
-            --azure-sp-client-secret=${{ steps.secrets.outputs.azure-sp-client-secret }}
-            --oidc-token=${{ steps.get_oidc.outputs.jwt }}
-            --config=./configs/image-builder-client-config.yaml
+      - name: Trigger dummy ADO pipeline (Option A)
+        env:
+          AZURE_SP_TENANT_ID: ${{ secrets.AZURE_SP_TENANT_ID }}
+          AZURE_SP_CLIENT_ID: ${{ secrets.AZURE_SP_CLIENT_ID }}
+          AZURE_SP_CLIENT_SECRET: ${{ secrets.AZURE_SP_CLIENT_SECRET }}
+          ADO_PIPELINE_ID: ${{ secrets.ADO_PIPELINE_ID }}
+        run: |
+          go run ./cmd/poc-484 \
+            --ado-pipeline-id="${ADO_PIPELINE_ID}" \
+            --azure-sp-tenant-id="${AZURE_SP_TENANT_ID}" \
+            --azure-sp-client-id="${AZURE_SP_CLIENT_ID}" \
+            --azure-sp-client-secret="${AZURE_SP_CLIENT_SECRET}"

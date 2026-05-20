@@ -3,18 +3,14 @@
 // It verifies that an Azure DevOps pipeline can be triggered using an Azure AD
 // Service Principal instead of a Personal Access Token (PAT).
 //
-// Two authentication modes are supported, matching the two PoC options:
+// This is the Option A variant: the binary acquires the Bearer token internally
+// via the client-credentials flow using pkg/azuredevops/auth:
 //
-//	Option A (binary acquires token):
-//	  --azure-sp-tenant-id, --azure-sp-client-id, --azure-sp-client-secret
-//	  The tool acquires a Bearer token internally via the client-credentials flow.
+//	--azure-sp-tenant-id, --azure-sp-client-id, --azure-sp-client-secret
 //
-//	Option B (caller acquires token):
-//	  --azure-access-token=<bearer-token> --azure-access-token-type=bearer
-//	  The tool uses the pre-acquired Bearer token directly.
+// Falls back to ADO_PAT environment variable for classic PAT auth.
 //
-// In both cases the tool triggers the dummy ADO pipeline specified by
-// --ado-pipeline-id in the --ado-org-url / --ado-project organisation and
+// The tool triggers the dummy ADO pipeline specified by --ado-pipeline-id and
 // waits for it to complete, printing the final run result.
 package main
 
@@ -23,12 +19,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
-	adov7 "github.com/microsoft/azure-devops-go-api/azuredevops/v7"
 	"github.com/microsoft/azure-devops-go-api/azuredevops/v7/pipelines"
 
 	adoauth "github.com/kyma-project/test-infra/pkg/azuredevops/auth"
+	adopipelines "github.com/kyma-project/test-infra/pkg/azuredevops/pipelines"
 )
 
 type options struct {
@@ -37,14 +34,13 @@ type options struct {
 	adoProject  string
 	adoPipeline int
 
-	// Option A — SP credentials, binary acquires token
+	// Option A — SP credentials, binary acquires token via adoauth library
 	azureSPTenantID     string
 	azureSPClientID     string
 	azureSPClientSecret string
 
-	// Option B — pre-acquired token passed in
-	azureAccessToken     string
-	azureAccessTokenType string
+	// PAT fallback
+	azureAccessToken string
 
 	// behaviour
 	pollInterval time.Duration
@@ -58,12 +54,11 @@ func main() {
 	flag.StringVar(&o.adoProject, "ado-project", "kyma", "Azure DevOps project name")
 	flag.IntVar(&o.adoPipeline, "ado-pipeline-id", 0, "ID of the dummy ADO pipeline to trigger (required)")
 
-	flag.StringVar(&o.azureSPTenantID, "azure-sp-tenant-id", "", "Option A: Azure AD tenant ID")
-	flag.StringVar(&o.azureSPClientID, "azure-sp-client-id", "", "Option A: Azure AD application (client) ID")
-	flag.StringVar(&o.azureSPClientSecret, "azure-sp-client-secret", "", "Option A: Azure AD client secret")
+	flag.StringVar(&o.azureSPTenantID, "azure-sp-tenant-id", "", "Azure AD tenant ID for Service Principal auth")
+	flag.StringVar(&o.azureSPClientID, "azure-sp-client-id", "", "Azure AD application (client) ID for Service Principal auth")
+	flag.StringVar(&o.azureSPClientSecret, "azure-sp-client-secret", "", "Azure AD client secret for Service Principal auth")
 
-	flag.StringVar(&o.azureAccessToken, "azure-access-token", "", "Option B: pre-acquired token (PAT or Bearer)")
-	flag.StringVar(&o.azureAccessTokenType, "azure-access-token-type", "pat", "Option B: token type — 'pat' or 'bearer'")
+	flag.StringVar(&o.azureAccessToken, "azure-access-token", "", "PAT fallback token")
 
 	flag.DurationVar(&o.pollInterval, "poll-interval", 10*time.Second, "How often to poll for pipeline run status")
 	flag.DurationVar(&o.timeout, "timeout", 5*time.Minute, "Maximum time to wait for pipeline run to complete")
@@ -83,21 +78,13 @@ func run(o options) error {
 
 	ctx := context.Background()
 
-	// --- resolve token ---
-	token, tokenType, err := resolveToken(ctx, o)
+	client, err := resolveClient(ctx, o)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Token resolved (type: %s). Connecting to %s...\n", tokenType, o.adoOrgURL)
-
-	// --- build ADO connection ---
-	conn := newConnection(o.adoOrgURL, token, tokenType)
-
-	// --- trigger pipeline ---
-	client := pipelines.NewClient(ctx, conn)
 
 	fmt.Printf("Triggering pipeline %d in project %q...\n", o.adoPipeline, o.adoProject)
-	run, err := client.RunPipeline(ctx, pipelines.RunPipelineArgs{
+	pipelineRun, err := client.RunPipeline(ctx, pipelines.RunPipelineArgs{
 		Project:       &o.adoProject,
 		PipelineId:    &o.adoPipeline,
 		RunParameters: &pipelines.RunPipelineParameters{
@@ -108,71 +95,58 @@ func run(o options) error {
 		return fmt.Errorf("failed to trigger pipeline: %w", err)
 	}
 
-	fmt.Printf("Pipeline run created: ID=%d  URL=%s\n", *run.Id, buildRunURL(o.adoOrgURL, o.adoProject, *run.Id))
+	fmt.Printf("Pipeline run created: ID=%d  URL=%s\n", *pipelineRun.Id, buildRunURL(o.adoOrgURL, o.adoProject, *pipelineRun.Id))
 
-	// --- poll for result ---
-	return waitForResult(ctx, client, o, *run.Id)
+	return waitForResult(ctx, client, o, *pipelineRun.Id)
 }
 
-// resolveToken returns the raw access token and its type ("pat" or "bearer").
-func resolveToken(ctx context.Context, o options) (token, tokenType string, err error) {
-	// Option A — all three SP flags provided: acquire token internally.
+// resolveClient acquires a token via the appropriate method and returns the
+// correct ADO pipelines client. All connection logic goes through the library.
+func resolveClient(ctx context.Context, o options) (adopipelines.Client, error) {
+	// Option A — SP credentials provided: acquire Bearer token via adoauth library.
 	if o.azureSPTenantID != "" || o.azureSPClientID != "" || o.azureSPClientSecret != "" {
 		fmt.Println("Option A: acquiring Azure AD Bearer token via Service Principal...")
-		cfg := adoauth.ServicePrincipalConfig{
+		ts, err := adoauth.NewServicePrincipalTokenSource(ctx, adoauth.ServicePrincipalConfig{
 			TenantID:     o.azureSPTenantID,
 			ClientID:     o.azureSPClientID,
 			ClientSecret: o.azureSPClientSecret,
-		}
-		ts, err := adoauth.NewServicePrincipalTokenSource(ctx, cfg)
+		})
 		if err != nil {
-			return "", "", fmt.Errorf("cannot create SP token source: %w", err)
+			return nil, fmt.Errorf("cannot create SP token source: %w", err)
 		}
-		t, err := ts.ADOToken(ctx)
+		token, err := ts.ADOToken(ctx)
 		if err != nil {
-			return "", "", fmt.Errorf("cannot acquire Azure AD token: %w", err)
+			return nil, fmt.Errorf("cannot acquire Azure AD token: %w", err)
 		}
 		fmt.Println("Azure AD token acquired successfully.")
-		return t, "bearer", nil
+		return adopipelines.NewClientWithAADToken(o.adoOrgURL, token), nil
 	}
 
-	// Option B — pre-acquired token provided via flag.
+	// PAT — explicit flag.
 	if o.azureAccessToken != "" {
-		fmt.Printf("Option B: using pre-acquired token (type: %s).\n", o.azureAccessTokenType)
-		return o.azureAccessToken, o.azureAccessTokenType, nil
+		fmt.Println("Using explicit PAT token.")
+		return adopipelines.NewClient(o.adoOrgURL, o.azureAccessToken), nil
 	}
 
-	// Classic PAT fallback via environment variable.
+	// PAT — environment variable fallback.
 	if pat, ok := os.LookupEnv("ADO_PAT"); ok {
 		fmt.Println("Fallback: using ADO_PAT environment variable.")
-		return pat, "pat", nil
+		return adopipelines.NewClient(o.adoOrgURL, pat), nil
 	}
 
-	return "", "", fmt.Errorf("no credentials provided: use --azure-sp-* flags (option A), " +
-		"--azure-access-token (option B), or set ADO_PAT environment variable")
-}
-
-// newConnection builds an ADO Connection for the given token type.
-func newConnection(orgURL, token, tokenType string) *adov7.Connection {
-	if tokenType == "bearer" {
-		return &adov7.Connection{
-			AuthorizationString:     "Bearer " + token,
-			BaseUrl:                 orgURL,
-			SuppressFedAuthRedirect: true,
-		}
-	}
-	return adov7.NewPatConnection(orgURL, token)
+	return nil, fmt.Errorf("no credentials provided: use --azure-sp-* flags for Service Principal auth, " +
+		"--azure-access-token for a PAT, or set ADO_PAT environment variable")
 }
 
 // waitForResult polls the pipeline run until it reaches a terminal state or the timeout expires.
-func waitForResult(ctx context.Context, client pipelines.Client, o options, runID int) error {
+func waitForResult(ctx context.Context, client adopipelines.Client, o options, runID int) error {
 	deadline := time.Now().Add(o.timeout)
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("timed out after %s waiting for pipeline run %d to complete", o.timeout, runID)
 		}
 
-		run, err := client.GetRun(ctx, pipelines.GetRunArgs{
+		pipelineRun, err := client.GetRun(ctx, pipelines.GetRunArgs{
 			Project:    &o.adoProject,
 			PipelineId: &o.adoPipeline,
 			RunId:      &runID,
@@ -181,13 +155,12 @@ func waitForResult(ctx context.Context, client pipelines.Client, o options, runI
 			return fmt.Errorf("failed to get pipeline run status: %w", err)
 		}
 
-		state := string(*run.State)
-		fmt.Printf("  run %d state: %s\n", runID, state)
+		fmt.Printf("  run %d state: %s\n", runID, string(*pipelineRun.State))
 
-		if *run.State == pipelines.RunStateValues.Completed {
-			result := string(*run.Result)
+		if *pipelineRun.State == pipelines.RunStateValues.Completed {
+			result := string(*pipelineRun.Result)
 			fmt.Printf("Pipeline run %d completed with result: %s\n", runID, result)
-			if *run.Result != pipelines.RunResultValues.Succeeded {
+			if *pipelineRun.Result != pipelines.RunResultValues.Succeeded {
 				return fmt.Errorf("pipeline run did not succeed: %s", result)
 			}
 			return nil
@@ -199,5 +172,9 @@ func waitForResult(ctx context.Context, client pipelines.Client, o options, runI
 
 // buildRunURL constructs a human-readable ADO pipeline run URL for logging.
 func buildRunURL(orgURL, project string, runID int) string {
-	return fmt.Sprintf("%s/%s/_build/results?buildId=%d", orgURL, project, runID)
+	org := orgURL
+	if idx := strings.LastIndex(orgURL, "/"); idx >= 0 {
+		org = orgURL[idx+1:]
+	}
+	return fmt.Sprintf("https://dev.azure.com/%s/%s/_build/results?buildId=%d", org, project, runID)
 }
