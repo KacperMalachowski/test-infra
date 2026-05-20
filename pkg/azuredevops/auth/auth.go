@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 const (
@@ -105,23 +106,21 @@ func NewServicePrincipalTokenSource(ctx context.Context, config ServicePrincipal
 
 	tokenURL := fmt.Sprintf(tokenEndpointTemplate, config.TenantID)
 
-	// oauth2.Config with client-credentials grant.
-	// We use Endpoint.TokenURL directly; AuthURL is not needed for this flow.
-	oauthConfig := &oauth2.Config{
+	// clientcredentials.Config is the correct type for the OAuth2 client-credentials
+	// grant (machine-to-machine, no user interaction). oauth2.Config.TokenSource
+	// is for the authorization-code flow and fails with "refresh token is not set"
+	// when passed a nil token.
+	ccConfig := &clientcredentials.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
-		Endpoint: oauth2.Endpoint{
-			TokenURL:  tokenURL,
-			AuthStyle: oauth2.AuthStyleInParams,
-		},
-		Scopes: []string{ADOResourceScope},
+		TokenURL:     tokenURL,
+		Scopes:       []string{ADOResourceScope},
+		AuthStyle:    oauth2.AuthStyleInParams,
 	}
 
-	// ClientCredentials returns a TokenSource that uses the client-credentials
-	// grant. It caches the token and refreshes it before expiry.
-	ts := oauthConfig.TokenSource(ctx, nil)
-	// Wrap with ReuseTokenSource to ensure the cached token is reused across calls.
-	reuseTS := oauth2.ReuseTokenSource(nil, ts)
+	// TokenSource returns a TokenSource that uses the client-credentials grant.
+	// It fetches a new token when the current one expires.
+	reuseTS := oauth2.ReuseTokenSource(nil, ccConfig.TokenSource(ctx))
 
 	return &ServicePrincipalTokenSource{
 		config:      config,
@@ -171,18 +170,15 @@ func NewServicePrincipalTokenSourceWithHTTPClient(
 
 	tokenURL := fmt.Sprintf(tokenEndpointTemplate, config.TenantID)
 
-	oauthConfig := &oauth2.Config{
+	ccConfig := &clientcredentials.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
-		Endpoint: oauth2.Endpoint{
-			TokenURL:  tokenURL,
-			AuthStyle: oauth2.AuthStyleInParams,
-		},
-		Scopes: []string{ADOResourceScope},
+		TokenURL:     tokenURL,
+		Scopes:       []string{ADOResourceScope},
+		AuthStyle:    oauth2.AuthStyleInParams,
 	}
 
-	ts := oauthConfig.TokenSource(ctx, nil)
-	reuseTS := oauth2.ReuseTokenSource(nil, ts)
+	reuseTS := oauth2.ReuseTokenSource(nil, ccConfig.TokenSource(ctx))
 
 	return &ServicePrincipalTokenSource{
 		config:      config,
