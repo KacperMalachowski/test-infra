@@ -1,20 +1,16 @@
 // Command poc-484 is a standalone PoC test tool for issue #484.
 //
 // It verifies that an Azure DevOps pipeline can be triggered using an Azure AD
-// Service Principal instead of a Personal Access Token (PAT).
+// Bearer token instead of a Personal Access Token (PAT).
 //
-// Two authentication modes are supported, matching the two PoC options:
+// This is the Option B variant: the caller acquires the Bearer token externally
+// (e.g. via curl against the Azure AD token endpoint) and passes it in via flag:
 //
-//	Option A (binary acquires token):
-//	  --azure-sp-tenant-id, --azure-sp-client-id, --azure-sp-client-secret
-//	  The tool acquires a Bearer token internally via the client-credentials flow.
+//	--azure-access-token=<bearer-token> --azure-access-token-type=bearer
 //
-//	Option B (caller acquires token):
-//	  --azure-access-token=<bearer-token> --azure-access-token-type=bearer
-//	  The tool uses the pre-acquired Bearer token directly.
+// Falls back to ADO_PAT environment variable for classic PAT auth.
 //
-// In both cases the tool triggers the dummy ADO pipeline specified by
-// --ado-pipeline-id in the --ado-org-url / --ado-project organisation and
+// The tool triggers the dummy ADO pipeline specified by --ado-pipeline-id and
 // waits for it to complete, printing the final run result.
 package main
 
@@ -27,8 +23,6 @@ import (
 
 	adov7 "github.com/microsoft/azure-devops-go-api/azuredevops/v7"
 	"github.com/microsoft/azure-devops-go-api/azuredevops/v7/pipelines"
-
-	adoauth "github.com/kyma-project/test-infra/pkg/azuredevops/auth"
 )
 
 type options struct {
@@ -36,11 +30,6 @@ type options struct {
 	adoOrgURL   string
 	adoProject  string
 	adoPipeline int
-
-	// Option A — SP credentials, binary acquires token
-	azureSPTenantID     string
-	azureSPClientID     string
-	azureSPClientSecret string
 
 	// Option B — pre-acquired token passed in
 	azureAccessToken     string
@@ -58,12 +47,8 @@ func main() {
 	flag.StringVar(&o.adoProject, "ado-project", "kyma", "Azure DevOps project name")
 	flag.IntVar(&o.adoPipeline, "ado-pipeline-id", 0, "ID of the dummy ADO pipeline to trigger (required)")
 
-	flag.StringVar(&o.azureSPTenantID, "azure-sp-tenant-id", "", "Option A: Azure AD tenant ID")
-	flag.StringVar(&o.azureSPClientID, "azure-sp-client-id", "", "Option A: Azure AD application (client) ID")
-	flag.StringVar(&o.azureSPClientSecret, "azure-sp-client-secret", "", "Option A: Azure AD client secret")
-
-	flag.StringVar(&o.azureAccessToken, "azure-access-token", "", "Option B: pre-acquired token (PAT or Bearer)")
-	flag.StringVar(&o.azureAccessTokenType, "azure-access-token-type", "pat", "Option B: token type — 'pat' or 'bearer'")
+	flag.StringVar(&o.azureAccessToken, "azure-access-token", "", "Pre-acquired token (PAT or Bearer)")
+	flag.StringVar(&o.azureAccessTokenType, "azure-access-token-type", "pat", "Token type — 'pat' or 'bearer'")
 
 	flag.DurationVar(&o.pollInterval, "poll-interval", 10*time.Second, "How often to poll for pipeline run status")
 	flag.DurationVar(&o.timeout, "timeout", 5*time.Minute, "Maximum time to wait for pipeline run to complete")
@@ -115,27 +100,7 @@ func run(o options) error {
 }
 
 // resolveToken returns the raw access token and its type ("pat" or "bearer").
-func resolveToken(ctx context.Context, o options) (token, tokenType string, err error) {
-	// Option A — all three SP flags provided: acquire token internally.
-	if o.azureSPTenantID != "" || o.azureSPClientID != "" || o.azureSPClientSecret != "" {
-		fmt.Println("Option A: acquiring Azure AD Bearer token via Service Principal...")
-		cfg := adoauth.ServicePrincipalConfig{
-			TenantID:     o.azureSPTenantID,
-			ClientID:     o.azureSPClientID,
-			ClientSecret: o.azureSPClientSecret,
-		}
-		ts, err := adoauth.NewServicePrincipalTokenSource(ctx, cfg)
-		if err != nil {
-			return "", "", fmt.Errorf("cannot create SP token source: %w", err)
-		}
-		t, err := ts.ADOToken(ctx)
-		if err != nil {
-			return "", "", fmt.Errorf("cannot acquire Azure AD token: %w", err)
-		}
-		fmt.Println("Azure AD token acquired successfully.")
-		return t, "bearer", nil
-	}
-
+func resolveToken(_ context.Context, o options) (token, tokenType string, err error) {
 	// Option B — pre-acquired token provided via flag.
 	if o.azureAccessToken != "" {
 		fmt.Printf("Option B: using pre-acquired token (type: %s).\n", o.azureAccessTokenType)
@@ -148,8 +113,7 @@ func resolveToken(ctx context.Context, o options) (token, tokenType string, err 
 		return pat, "pat", nil
 	}
 
-	return "", "", fmt.Errorf("no credentials provided: use --azure-sp-* flags (option A), " +
-		"--azure-access-token (option B), or set ADO_PAT environment variable")
+	return "", "", fmt.Errorf("no credentials provided: use --azure-access-token (with --azure-access-token-type=bearer for AAD tokens) or set ADO_PAT environment variable")
 }
 
 // newConnection builds an ADO Connection for the given token type.
